@@ -1,0 +1,45 @@
+#
+# c2s rescue: minimal ARM64 USB rescue configuration for the Samsung Galaxy
+# Note20 Ultra 5G (c2s, Exynos 990).
+#
+# Purpose: boot early, expose USB device mode (NCM/RNDIS/ACM) and give an
+# operator shell access over USB only:
+#   - dropbear, public-key authentication only
+#   - telnet, explicit debug/rescue opt-in only
+#   - static IP 192.168.42.1/24 on usb0
+#
+# Deliberately absent: WLAN, Bluetooth, display drivers, disk filesystems,
+# loadable modules, host-side USB, UART (no mainline driver for c2s).
+#
+# The initramfs is assembled outside the kernel build and injected with
+# CONFIG_INITRAMFS_SOURCE by c2s-rescue/scripts/build.sh, so this file
+# contains no absolute host paths.
+#
+# This file is the savedefconfig() output for this configuration; only
+# symbols that differ from their Kconfig default are listed.
+#
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_ARCH_EXYNOS=y
+CONFIG_CMDLINE="console=tty0 loglevel=7 ignore_loglevel"
+CONFIG_CMDLINE_FORCE=y
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_KEYBOARD_GPIO=y
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
+CONFIG_FB=y
+CONFIG_FB_SIMPLE=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_USB_DWC3=y
+CONFIG_USB_GADGET=y
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_ACM=y
+CONFIG_USB_CONFIGFS_NCM=y
+CONFIG_USB_CONFIGFS_RNDIS=y
+CONFIG_TMPFS=y
+CONFIG_PRINTK_TIME=y

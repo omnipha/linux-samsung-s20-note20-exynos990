@@ -1,0 +1,7 @@
+c2s rescue shell.
+
+USB gadget (NCM + RNDIS + ACM):
+  Linux/macOS (NCM):   192.168.42.2 -> ssh root@192.168.42.1
+  Windows/other(RNDIS):192.168.62.2 -> ssh root@192.168.62.1
+SSH: dropbear, public key only (password auth compiled out).
+Telnet: disabled; opt in with `rescue-telnet arm` from SSH.
