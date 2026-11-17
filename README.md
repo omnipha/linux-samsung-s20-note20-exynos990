@@ -34,7 +34,7 @@ Delivered under `c2s-rescue/`:
 - `c2s-rescue/dropbear/localoptions.h`: password/PAM auth compiled out.
 - `c2s-rescue/scripts/build.sh`: builds `Image`, `exynos990-c2s.dtb` and the
   initramfs archive outside the repository, byte-reproducible.
-- `c2s-rescue/scripts/verify.sh`: 75 host-side verification gates.
+- `c2s-rescue/scripts/verify.sh`: 79 host-side verification gates.
 - `c2s-rescue/docs/`: evidence log, build record, boot instructions and open
   points.
 

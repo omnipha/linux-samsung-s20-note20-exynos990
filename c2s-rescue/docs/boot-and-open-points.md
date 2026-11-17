@@ -15,7 +15,7 @@
   out password/PAM auth (public key only).
 - `c2s-rescue/scripts/build.sh` - builds `Image`, `exynos990-c2s.dtb`
   and the initramfs archive outside the repo.
-- `c2s-rescue/scripts/verify.sh` - 75 host-side verification gates.
+- `c2s-rescue/scripts/verify.sh` - 79 host-side verification gates.
 - `c2s-rescue/docs/evidence.md` - evidence log and artifact hashes.
 
 ## Building

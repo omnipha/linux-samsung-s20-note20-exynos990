@@ -22,6 +22,12 @@ CONFIG_IKCONFIG=y
 CONFIG_IKCONFIG_PROC=y
 CONFIG_BLK_DEV_INITRD=y
 CONFIG_ARCH_EXYNOS=y
+# Pin the release string: with CONFIG_LOCALVERSION_AUTO the kernel release
+# would carry the git describe output (commit hash, "-dirty"), so every new
+# commit would change the Image and invalidate the documented sha256 sums.
+# The rescue build therefore uses a fixed local version suffix.
+CONFIG_LOCALVERSION="-c2s-rescue"
+# CONFIG_LOCALVERSION_AUTO is not set
 CONFIG_CMDLINE="console=tty0 loglevel=7 ignore_loglevel"
 CONFIG_CMDLINE_FORCE=y
 CONFIG_NET=y

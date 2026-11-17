@@ -72,10 +72,11 @@ Derived binaries (recorded in `build.log`):
 
 | Knob | Value | Reason |
 |---|---|---|
-| `SOURCE_DATE_EPOCH` | 1794605179 (git commit timestamp) | pins cpio mtimes and `UTS_VERSION` |
+| `SOURCE_DATE_EPOCH` | 1794605179 (timestamp of commit 13e4b531bcc1, not HEAD) | pins cpio mtimes and `UTS_VERSION` |
 | `KBUILD_BUILD_TIMESTAMP` | same value | pins the build date in `UTS_VERSION` |
 | `KBUILD_BUILD_VERSION` | 1 | pins the `#N` build counter |
 | `KBUILD_BUILD_USER` / `_HOST` | `c2s-rescue` | pins `LINUX_COMPILE_BY@HOST` |
+| `CONFIG_LOCALVERSION` | `-c2s-rescue`, `LOCALVERSION_AUTO` off | pins the release string so the Image does not change per commit (no `git describe` suffix) |
 | `CONFIG_INITRAMFS_SOURCE` | `initramfs.cpio.gz` (relative) | the whole `.config` is embedded via IKCONFIG; an absolute path would leak the build directory into the `Image` |
 
 Result: two consecutive full builds produced byte-identical artifacts.
@@ -84,7 +85,7 @@ Result: two consecutive full builds produced byte-identical artifacts.
 
 | Artifact | Size | sha256 |
 |---|---|---|
-| `Image` | 11,432,448 B | `63d6b45dcc60fb56c958e9c7158110081f22189690b578c00e8e650d9fd78307` |
+| `Image` | 11,432,448 B | `dd6785a0a73841ca37ce7b623f2e782df5f3a6cb2e2a927c231ceea1b5f27f97` |
 | `exynos990-c2s.dtb` | 38,288 B | `4e4e5702ce715ff4d8c0bc066a0c8d66a039473fdea49c423bc4d4cc8ad79b0f` |
 | `initramfs.cpio.gz` | 2,211,972 B | `c84d00ec2981bc47b649a212d6d47c8d26ed13f0e082e24536fdc87fd8f581ff` |
 | `initramfs.cpio` (uncompressed) | | `df3e43d6fff5b0fc337a82704e7290c574b9c9fb225dc1a68e0500c24d5611fb` |
@@ -109,13 +110,13 @@ deliberately not shipped at all.
 
 ## Verification
 
-`c2s-rescue/scripts/verify.sh` - 75 checks, all passing:
+`c2s-rescue/scripts/verify.sh` - 79 checks, all passing:
 
 | Group | Checks |
 |---|---|
 | artifacts | Image, DTB, initramfs, build-record.txt, build.log exist and are non-empty |
-| kernel config | ~35 required `=y` symbols, `CMDLINE_FORCE=y`, `MODULES` unset, `INITRAMFS_SOURCE` resolves to the staged archive, staged copy identical, embedded copy identical |
-| image hygiene | no build-host path inside the `Image` |
+| kernel config | ~35 required `=y` symbols, `CMDLINE_FORCE=y`, `MODULES` unset, pinned `LOCALVERSION`, `LOCALVERSION_AUTO` unset, `INITRAMFS_SOURCE` resolves to the staged archive, staged copy identical, embedded copy identical |
+| image hygiene | no build-host path inside the `Image`, release string pinned without `git describe` suffix |
 | initramfs | cpio listing has `dev/console` as char 5:1, `/init` executable, busybox/dropbear present, passwd/shells/rescue.conf content, `/init` parses under busybox ash and dash |
 | secret scan | no serial/private-key patterns in tracked rescue sources or in the archive |
 | DTB | framebuffer node, `usb@10e00000`, exynos990 usbdrd-phy compatible, memory up to 0xb00000000, dummy regulators |

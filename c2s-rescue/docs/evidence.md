@@ -107,7 +107,7 @@ Environment (also in `build-record.txt` / `build.log`, produced by
 | host | Linux 7.0.0-42-generic x86_64 |
 | cross gcc | aarch64-linux-gnu-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0 |
 | make / gzip / cpio / dtc | 4.4.1 / 1.14 / GNU 2.15 / DTC 1.7.2 |
-| SOURCE_DATE_EPOCH | 1794605179 (git commit timestamp, pinned) |
+| SOURCE_DATE_EPOCH | 1794605179 (timestamp of commit 13e4b531bcc1, pinned) |
 
 External dependencies (verified by sha256 in `build.sh`, never
 committed to the repo):
@@ -122,7 +122,7 @@ Artifacts (byte-identical across two consecutive builds):
 
 | Artifact | Size | sha256 |
 |---|---|---|
-| `Image` | 11,432,448 B | `63d6b45dcc60fb56c958e9c7158110081f22189690b578c00e8e650d9fd78307` |
+| `Image` | 11,432,448 B | `dd6785a0a73841ca37ce7b623f2e782df5f3a6cb2e2a927c231ceea1b5f27f97` |
 | `exynos990-c2s.dtb` | 38,288 B | `4e4e5702ce715ff4d8c0bc066a0c8d66a039473fdea49c423bc4d4cc8ad79b0f` |
 | `initramfs.cpio.gz` | 2,211,972 B | `c84d00ec2981bc47b649a212d6d47c8d26ed13f0e082e24536fdc87fd8f581ff` |
 | unpacked `initramfs.cpio` | | `df3e43d6fff5b0fc337a82704e7290c574b9c9fb225dc1a68e0500c24d5611fb` |
@@ -130,10 +130,13 @@ Artifacts (byte-identical across two consecutive builds):
 Reproducibility measures (all proven by a second full build producing
 the same hashes):
 
-- `SOURCE_DATE_EPOCH` = commit timestamp feeds `gen_initramfs.sh -d`
-  (pinned cpio mtimes) and `KBUILD_BUILD_TIMESTAMP` (pinned
-  `UTS_VERSION` in the Image).
+- `SOURCE_DATE_EPOCH` = the pinned board-commit timestamp feeds
+  `gen_initramfs.sh -d` (pinned cpio mtimes) and `KBUILD_BUILD_TIMESTAMP`
+  (pinned `UTS_VERSION` in the Image).
 - `KBUILD_BUILD_VERSION=1` pins the `#N` build counter.
+- `CONFIG_LOCALVERSION="-c2s-rescue"` with `CONFIG_LOCALVERSION_AUTO`
+  off pins the release string; otherwise the kernel release would carry
+  the `git describe` output and every commit would change the `Image`.
 - `CONFIG_INITRAMFS_SOURCE` is set to the *relative* path
   `initramfs.cpio.gz` inside the kbuild tree; an absolute path would
   leak the build directory into the Image via CONFIG_IKCONFIG.
@@ -150,22 +153,24 @@ dropbearkey sha256 17f4e9a03f2d48cabd26358feabe11ed8d35f930f01ce11e8956c6df3f037
 
 ## Host verification evidence (`verify.sh`)
 
-`c2s-rescue/scripts/verify.sh` runs 75 checks, all passing on the
+`c2s-rescue/scripts/verify.sh` runs 79 checks, all passing on the
 artifacts above:
 
 - kernel config: ~35 required `=y` symbols, `CONFIG_MODULES` unset,
-  `CONFIG_INITRAMFS_SOURCE` pointing at the staged archive.
+  `CONFIG_INITRAMFS_SOURCE` pointing at the staged archive, pinned
+  `CONFIG_LOCALVERSION` with `LOCALVERSION_AUTO` off.
 - initramfs: cpio listing contains `dev/console` as char 5:1,
   `/init` + busybox + dropbear + rescue config present, `/init`
   parses under busybox ash and dash.
-- secrets: tracked rescue sources and the built archive contain no
+- secrets: the rescue sources and the built archive contain no
   serials and no private key material.
 - DTB: framebuffer node, `usb@10e00000`, exynos990 usbdrd-phy
   compatible, full memory coverage up to 0xb00000000, dummy
   regulators present.
 - Image: ARM64 magic (`41 52 4d 64` at offset 0x38), no build-host
   paths inside the binary, embedded initramfs byte-identical to the
-  standalone archive.
+  standalone archive, release string `7.1.0-rc4-c2s-rescue` without a
+  `git describe` suffix.
 - static binaries: busybox and dropbear are static aarch64 ELF,
   dropbear has no `NEEDED` entries.
 - functional smoke test (same dropbear binary as in the initramfs,

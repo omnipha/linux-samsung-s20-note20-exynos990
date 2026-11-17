@@ -55,7 +55,7 @@ CONFIG="${KBUILD}/.config"
 require_cfg() {
 	local sym="$1" want="${2:-y}"
 	local got
-	got=$(grep -E "^CONFIG_${sym}=" "${CONFIG}" 2>/dev/null | head -n1 | cut -d= -f2)
+	got=$(grep -E "^CONFIG_${sym}=" "${CONFIG}" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
 	if [ "${got}" = "${want}" ]; then
 		ok "CONFIG_${sym}=${want}"
 	else
@@ -72,6 +72,13 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
 	require_cfg "$s" y
 done
 require_cfg CMDLINE_FORCE y
+# pinned release string, see the defconfig comment
+require_cfg LOCALVERSION "-c2s-rescue"
+if grep -q "^CONFIG_LOCALVERSION_AUTO=y" "${CONFIG}" 2> /dev/null; then
+	bad "CONFIG_LOCALVERSION_AUTO=y (would embed git describe in the Image)"
+else
+	ok "CONFIG_LOCALVERSION_AUTO is not set"
+fi
 # the initramfs must be baked in; CONFIG_INITRAMFS_SOURCE is relative to the
 # kbuild tree (the absolute path would leak into the Image via IKCONFIG)
 INITRAMFS_CFG=$(grep -E "^CONFIG_INITRAMFS_SOURCE=" "${CONFIG}" 2> /dev/null \
@@ -100,6 +107,19 @@ if strings "${IMAGE}" 2> /dev/null | grep -q "${OUTDIR}"; then
 	bad "Image contains the build output path (not reproducible)"
 else
 	ok "Image contains no build-host paths"
+fi
+# The release string must be pinned (CONFIG_LOCALVERSION) and must not carry
+# git describe output - otherwise the Image would change on every commit.
+RELEASE=$(strings "${IMAGE}" 2> /dev/null | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -n1)
+if [ "${RELEASE}" = "7.1.0-rc4-c2s-rescue" ]; then
+	ok "kernel release string is pinned (${RELEASE})"
+else
+	bad "kernel release string is not pinned (got '${RELEASE}')"
+fi
+if strings "${IMAGE}" 2> /dev/null | grep -qE "^Linux version [^ ]*-(dirty|g[0-9a-f]{7,})"; then
+	bad "kernel release string contains git describe output"
+else
+	ok "kernel release string has no git describe suffix"
 fi
 # the kernel must not load modules: everything needed is built-in
 if ! grep -qE "^CONFIG_MODULES=y" "${CONFIG}"; then

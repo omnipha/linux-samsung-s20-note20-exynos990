@@ -238,7 +238,13 @@ cp "${REPO_DIR}/usr/gen_init_cpio.c" "${SCRATCH}/usr/"
 # Pin every cpio entry to the commit timestamp so repeated builds of the
 # same revision produce byte-identical archives (-d feeds gen_init_cpio -t,
 # which also replaces per-file mtimes).
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${REPO_DIR}" log -1 --format=%ct 2>/dev/null || echo 0)}"
+# Reproducibility: the archive mtimes and the kernel build timestamp are
+# pinned to the timestamp of the commit that introduced the c2s board support
+# (13e4b531bcc1), NOT to HEAD: otherwise every follow-up commit would change
+# the Image and the sha256 sums recorded in c2s-rescue/docs would go stale.
+# Override with SOURCE_DATE_EPOCH if ever needed.
+C2S_EPOCH_COMMIT=13e4b531bcc17f85f3de3b75da1cc16569a0f2a4
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${REPO_DIR}" log -1 --format=%ct "${C2S_EPOCH_COMMIT}" 2>/dev/null || echo 1794605179)}"
 echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" | tee -a "${LOG}"
 run "generate initramfs" env -C "${SCRATCH}" \
 	"${REPO_DIR}/usr/gen_initramfs.sh" -o "${WORK}/initramfs.cpio" \
@@ -285,6 +291,12 @@ export KBUILD_BUILD_VERSION=1
 export KBUILD_BUILD_TIMESTAMP="${SOURCE_DATE_EPOCH}"
 export KBUILD_BUILD_USER="c2s-rescue"
 export KBUILD_BUILD_HOST="c2s-rescue"
+# Pin the release string: setlocalversion would otherwise append the git
+# describe output (commit hash + -dirty), which changes the Image on every
+# new commit and makes the documented hashes meaningless. LOCALVERSION is
+# deliberately set (to any value) so the scm_version suffix is omitted
+# entirely (scripts/setlocalversion:200-211).
+export LOCALVERSION=""
 echo "KBUILD_BUILD_TIMESTAMP=${KBUILD_BUILD_TIMESTAMP}" | tee -a "${LOG}"
 
 step "building Image and DTB"
