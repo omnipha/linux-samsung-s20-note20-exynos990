@@ -55,4 +55,3 @@ Remaining work:
   or partition layouts.
 
 No keys, firmware blobs, serials or other private data belong in this public repository.
-
