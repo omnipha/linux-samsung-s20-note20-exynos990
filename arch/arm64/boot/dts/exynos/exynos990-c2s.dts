@@ -41,8 +41,8 @@
 		      <0x0 0xc1200000 0x0 0x1ee00000>,
 		      /* Memory hole */
 		      <0x0 0xe1900000 0x0 0x1e700000>,
-		      /* Memory hole - last block */
-		      <0x8 0x80000000 0x2 0x7e800000>;
+		      /* Memory hole - last block, measured: RAM ends 0xb00000000 */
+		      <0x8 0x80000000 0x2 0x80000000>;
 	};
 
 	/* TODO: Remove this once PMIC is implemented */

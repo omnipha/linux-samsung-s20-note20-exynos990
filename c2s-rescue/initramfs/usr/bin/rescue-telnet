@@ -1,0 +1,32 @@
+#!/bin/sh
+# Opt-in the debug telnet for the *next* boot or arm it live.
+#
+# Usage:
+#   rescue-telnet arm     create /etc/enable-telnet and start telnetd now
+#   rescue-telnet disarm  remove /etc/enable-telnet and stop telnetd
+#
+# /etc is writable (it is part of the built-in initramfs, backed by RAM),
+# so the marker persists until reboot. Without it, telnetd never runs.
+# Telnet has no authentication: this is a deliberate debug/rescue aid,
+# never a default.
+set -e
+. /etc/rescue.conf
+
+case "${1:-}" in
+arm)
+    : > /etc/enable-telnet
+    echo "telnet armed for this and future boots"
+    echo "operator must run: telnetd -F -b $RESCUE_NCM_ADDR:$RESCUE_TELNET_PORT -l /bin/sh -f /etc/issue"
+    ;;
+disarm)
+    rm -f /etc/enable-telnet
+    for p in $(pidof telnetd); do
+        kill "$p"
+    done
+    echo "telnet disarmed"
+    ;;
+*)
+    echo "usage: rescue-telnet arm|disarm" >&2
+    exit 2
+    ;;
+esac
