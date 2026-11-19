@@ -105,5 +105,24 @@ asmlinkage phys_addr_t __init create_init_idmap(pgd_t *pg_dir, ptdesc_t clrmask)
 		  (phys_addr_t)__initdata_begin, data_prot, IDMAP_ROOT_LEVEL,
 		  (pte_t *)pg_dir, false, 0);
 
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #4 diagnostic (M2): map the three splash framebuffers
+	 * identically so the band painter in __primary_switched can reach
+	 * them while the initial ID map is still installed in TTBR0
+	 * (until cpu_uninstall_idmap() in setup_arch). The extra page
+	 * tables are budgeted via EARLY_IDMAP_DIAG_EXTRA_PAGES.
+	 */
+	map_range(&ptep, 0xf1000000ULL, 0xf1000000ULL + 0x10f6800ULL,
+		  0xf1000000ULL, data_prot, IDMAP_ROOT_LEVEL,
+		  (pte_t *)pg_dir, false, 0);
+	map_range(&ptep, 0xf9800000ULL, 0xf9800000ULL + 0x10f6800ULL,
+		  0xf9800000ULL, data_prot, IDMAP_ROOT_LEVEL,
+		  (pte_t *)pg_dir, false, 0);
+	map_range(&ptep, 0xfac00000ULL, 0xfac00000ULL + 0x10f6800ULL,
+		  0xfac00000ULL, data_prot, IDMAP_ROOT_LEVEL,
+		  (pte_t *)pg_dir, false, 0);
+#endif
+
 	return ptep;
 }

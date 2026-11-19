@@ -8,14 +8,17 @@
   framebuffer console, gpio-keys, devtmpfs, IKCONFIG.
 - `arch/arm64/boot/dts/exynos/exynos990-c2s.dts` - the c2s board DT.
   Fixed in this branch: the last memory block now matches the measured
-  RAM end at `0xb00000000`.
+  RAM end at `0xb00000000`, and the root uses the stock cell format
+  (`#address-cells = <2>`, `#size-cells = <1>`; every root-level
+  `reg` is 3-cell) so lk3rd's 3-cell `/memory` surgery is accepted
+  (see `evidence.md`, "lk3rd RAM-boot failure root cause").
 - `c2s-rescue/initramfs/` - PID 1 (`/init`) plus its `/etc` config and
   `rescue-telnet` helper.
 - `c2s-rescue/dropbear/localoptions.h` - build options that compile
   out password/PAM auth (public key only).
 - `c2s-rescue/scripts/build.sh` - builds `Image`, `exynos990-c2s.dtb`
   and the initramfs archive outside the repo.
-- `c2s-rescue/scripts/verify.sh` - 79 host-side verification gates.
+- `c2s-rescue/scripts/verify.sh` - 140 host-side verification gates.
 - `c2s-rescue/docs/evidence.md` - evidence log and artifact hashes.
 
 ## Building
@@ -55,19 +58,24 @@ running rescue instance.
 
 ## Booting (manual, not performed here)
 
-The build produces the two artefacts the vendor bootloader consumes:
+The build produces the artifacts the vendor bootloader consumes. Since
+issue #4 they are packaged into a flashable candidate by
+`c2s-rescue/scripts/package-bootimg.sh` (Android boot image v2 with the
+Samsung DT table in the dt slot - format documented in
+`build-record.md`):
 
 ```
-Image                     -> the kernel
-exynos990-c2s.dtb         -> the DTB for the (yet unknown) container
+Image                     -> boot image kernel slot
+exynos990-c2s.dtb         -> dt slot, wrapped in the Samsung DT table
+initramfs                 -> boot image ramdisk slot
+boot.img                  -> partition-sized, AVB hash footer
 ```
 
 **No boot or flash attempt was made as part of this issue.** This is
-deliberate: the packaging format the stock bootloader expects for a
-mainline `Image` + DTB pair (and how to place them without touching
-the installed vendor system) is unknown - see open points below. A
-boot attempt therefore requires a separate, explicit task with its own
-risk assessment, including a recovery path (download mode / Odin).
+deliberate: device I/O (ADB fastboot, Heimdall, flashing, rebooting)
+belongs to the coordinator. A boot attempt therefore requires a
+separate, explicit task with its own risk assessment, including a
+recovery path (download mode / Odin).
 
 ## Rescue system behaviour at boot
 
@@ -88,7 +96,11 @@ risk assessment, including a recovery path (download mode / Odin).
 5. A shell on the framebuffer console is kept alive and is respawned
    if it dies; dropbear and (if enabled) telnetd are supervised the
    same way.
-6. Telnet stays off unless *both* `RESCUE_ENABLE_TELNET="1"` in
+6. At boot, a menu on the framebuffer console + USB ACM serial (via
+   `/usr/bin/rescue-menu` and its input helper `rescue-menu-keys`) asks
+   for the mode: volume-up/power/Enter or timeout -> rescue (SSH only,
+   telnet off); volume-down or serial line `telnet` -> rescue + USB
+   telnet (explicit opt-in only). Telnet stays off unless *both* `RESCUE_ENABLE_TELNET="1"` in
    `/etc/rescue.conf` **and** the `/etc/enable-telnet` marker file are
    present. From an SSH session: `rescue-telnet arm` /
    `rescue-telnet disarm`.
@@ -104,18 +116,41 @@ see `evidence.md`. The verification gates in `verify.sh` cover kernel
 config, initramfs content, DTB sanity, image format, static linkage,
 secret scanning and a functional smoke test of the exact dropbear
 binary that ships in the initramfs (key login works, unlisted key
-rejected, password auth refused). Two consecutive builds produce
-byte-identical artifacts.
+rejected, password auth refused), plus the issue #4 gates: shipped
+applet symlinks, the TER16x32 console font, the boot-menu input helper
+(qemu-user regressions over representative event streams), the
+Samsung DT table in the packaged boot.img, and a host replay of sboot's
+DTBO merge (`fdtoverlay` of all 9 stock entries onto the built DTB,
+with positive/negative controls; the anchor nodes this requires come
+from `arch/arm64/boot/dts/exynos/c2s-overlay-anchors.dtsi`, generated
+by `c2s-rescue/scripts/gen-overlay-anchors.py`).
 
 ## Open points (out of scope for issue #1)
 
 These are known and documented rather than solved:
 
-1. **Bootloader packaging unknown.** The stock bootloader expects a
-   Samsung container image for kernel+DTB; how a mainline `Image` +
-   `exynos990-c2s.dtb` must be packaged (or whether a separate
-   partition/boot slot can be used) has not been determined. No boot
-   attempt was made.
+1. **Bootloader packaging (resolved for issue #4, not yet proven on
+   hardware).** The stock bootloader reads the dt slot of an Android
+   boot image v2 and expects a Samsung DT table (magic `0xd7b7ab1e`);
+   `c2s-rescue/scripts/package-bootimg.sh` produces it and documents
+   the exact template and sboot offset formula (see
+   `build-record.md`). The overlay merge itself is now replayed on the
+   host for all 9 stock dtbo entries (`fdtoverlay` gate in
+   `verify.sh`); what remains unverified until a coordinator
+   flash/boot test: which entry sboot selects for this board's
+   hw_rev, the DTB-partition side of sboot's overlay step,
+   probe behaviour of the disabled anchor nodes the overlay re-enables,
+   and the font rendering on the real framebuffer.
+   Further open hardware questions from the lk3rd analysis (see
+   `evidence.md`): which lk3rd path actually ran for the previous
+   candidates (quirks flag default in the `lk3rd` partition at
+   offset 0x175000 is unknown from the host; `fastboot oem
+   enable-mainline-quirks` / `disable-kaslr` read it out), and
+   whether the kernel ever started (no pstore/ramoops: `CONFIG_PSTORE`
+   is unset and non-destructive post-reset DRAM retrieval is
+   unproven — next observable signals are the lk3rd LCD text,
+   `enter_reason` and the USB re-enumeration ladder lk3rd
+   18d1:4d00 vs. kernel gadget).
 2. **No UART/console binding.** The vendor DT's
    `samsung,exynos-uart` compatible has no mainline driver for
    exynos990, so there is no serial console; rescue relies on the

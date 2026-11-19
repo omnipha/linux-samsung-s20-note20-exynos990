@@ -2448,6 +2448,17 @@ config DMI
 
 endmenu # "Boot options"
 
+config C2S_DIAG
+	bool "c2s rescue diagnostic boot markers (issue #4)"
+	default n
+	help
+	  Build-time switch for the c2s rescue diagnostic candidate. When
+	  enabled, the kernel writes early boot milestone markers as plain
+	  physical stores (MMU off, registers and adrp/adr only) into the
+	  framebuffers so a dying kernel leaves a visible trace on screen.
+	  The symbol is only enabled in c2s_rescue_defconfig; leave it off
+	  for every other build.
+
 menu "Power management options"
 
 source "kernel/power/Kconfig"

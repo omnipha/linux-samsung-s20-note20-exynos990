@@ -145,6 +145,36 @@ else
     log "USB gadget setup failed: no network services"
 fi
 
+# ------------------------------------------------------------- boot menu
+# Selection between "rescue (SSH only, default)" and "rescue + USB
+# telnet". The stock c2s bootloader (sboot) offers no menu of its own,
+# so the menu lives in this initramfs, which sboot loads from the boot
+# image.
+#
+# Telnet never starts by default. It starts only when the operator
+# explicitly selected it in the menu (USB ACM serial "t" or volume
+# down), or when it was armed earlier with "rescue-telnet arm" (the
+# marker file). The marker wins over the menu, so an armed telnet
+# stays armed across reboots until it is disarmed.
+boot_menu() {
+    if [ -f /etc/enable-telnet ]; then
+        log "boot menu: telnet already armed (rescue-telnet arm); keeping it armed"
+        return 0
+    fi
+    mode=$(rescue-menu 2>>/dev/kmsg)
+    case "$mode" in
+        telnet)
+            : > /etc/enable-telnet
+            RESCUE_ENABLE_TELNET=1
+            log "boot menu: telnet mode selected (USB-only, until rescue-telnet disarm)"
+            ;;
+        *)
+            log "boot menu: rescue mode selected (telnet off)"
+            ;;
+    esac
+}
+boot_menu
+
 if telnet_armed; then
     start_telnetd
     log "telnetd up on $RESCUE_NCM_ADDR:$RESCUE_TELNET_PORT (DEBUG MODE, unauthenticated)"

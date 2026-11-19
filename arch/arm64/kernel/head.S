@@ -83,6 +83,76 @@
 	 *  x21        primary_entry() .. start_kernel()        FDT pointer passed at boot in x0
 	 */
 SYM_CODE_START(primary_entry)
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * M1 (issue #4 diagnostic candidate): first instructions executed by
+	 * the kernel. The entry contract holds: MMU = off, D-cache = off,
+	 * so a plain store reaches DRAM directly. Everything below uses
+	 * registers only (no data references, no calls, no stack) and never
+	 * touches the bootloader arguments x0..x3, which preserve_boot_args()
+	 * records right afterwards.
+	 *
+	 * Paint a white band into the framebuffers at 0xf1000000 (visible
+	 * splash buffer), 0xf9800000 and 0xfac00000 (the two buffers the DECON
+	 * windows are configured on by lk3rd): 1440 px wide, rows 0..127,
+	 * stride 5760 bytes (1440 * 4, a8r8g8b8). White 0xffffffff is the
+	 * only colour that is unambiguous under any channel order.
+	 *
+	 * Assumption (documented in c2s-rescue/docs/diag-milestones.md): the
+	 * bootloader really entered with the MMU and D-cache off, and at
+	 * least one of the three buffers is scanned out by DECON.
+	 */
+	movz	x4, #0xffff
+	movk	x4, #0xffff, lsl #16
+	movk	x4, #0xffff, lsl #32
+	movk	x4, #0xffff, lsl #48
+	movz	x9, #5760			// stride in bytes
+	mov	x10, #128			// band height in rows
+
+	movz	x5, #0xf100, lsl #16		// framebuffer 0: 0xf1000000
+	mov	x8, x5
+	mov	x11, x10
+.Lc2s_m1_fb0_row:
+	mov	x6, x8
+	mov	x7, #360			// 5760 / 16
+.Lc2s_m1_fb0_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m1_fb0_col
+	add	x8, x8, x9
+	subs	x11, x11, #1
+	b.ne	.Lc2s_m1_fb0_row
+
+	movz	x5, #0xf980, lsl #16		// framebuffer 1: 0xf9800000
+	mov	x8, x5
+	mov	x11, x10
+.Lc2s_m1_fb1_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m1_fb1_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m1_fb1_col
+	add	x8, x8, x9
+	subs	x11, x11, #1
+	b.ne	.Lc2s_m1_fb1_row
+
+	movz	x5, #0xfac0, lsl #16		// framebuffer 2: 0xfac00000
+	mov	x8, x5
+	mov	x11, x10
+.Lc2s_m1_fb2_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m1_fb2_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m1_fb2_col
+	add	x8, x8, x9
+	subs	x11, x11, #1
+	b.ne	.Lc2s_m1_fb2_row
+
+	dsb	sy
+#endif
 	bl	record_mmu_state
 	bl	preserve_boot_args
 
@@ -218,6 +288,96 @@ SYM_CODE_END(preserve_boot_args)
  *   x0 = __pa(KERNEL_START)
  */
 SYM_FUNC_START_LOCAL(__primary_switched)
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * M2 (issue #4): first code running with the MMU and D-cache on,
+	 * still before start_kernel(). TTBR0 still holds the initial ID
+	 * map, which now identity-maps the three splash framebuffers
+	 * (see create_init_idmap() in pi/map_range.c), so the stores below
+	 * hit DRAM at the same VAs as M1 used with the MMU off.
+	 *
+	 * Colour: red 0xffff0000 in a8r8g8b8 (M1 = white rows 0..127),
+	 * band rows 128..255 = offset 128*5760 = 0xb4000, 128 rows =
+	 * 0xb4000 bytes per buffer. Because the D-cache is on now, the
+	 * painted range is cleaned to the point of coherency with
+	 * dc civac so the DECON scanout (and a later ramdump) sees it.
+	 */
+	movz	x4, #0x0000
+	movk	x4, #0xffff, lsl #16		// red 0xffff0000 (AARRGGBB)
+	movz	x9, #5760			// stride in bytes
+	mov	x10, #128			// band height in rows
+	movz	x11, #0xb, lsl #16		// band row offset 0xb4000
+	movk	x11, #0x4000			// 128 rows * 5760 bytes
+
+	movz	x5, #0xf100, lsl #16		// framebuffer 0: 0xf1000000
+	add	x5, x5, x11			// band start
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m2_fb0_row:
+	mov	x6, x8
+	mov	x7, #360			// 5760 / 16
+.Lc2s_m2_fb0_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m2_fb0_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m2_fb0_row
+	// clean the band to PoC: 0xb4000 bytes = 11520 cache lines (64 B)
+	mov	x6, x5
+	mov	x12, #11520
+.Lc2s_m2_fb0_flush:
+	dc	civac, x6
+	add	x6, x6, #64
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m2_fb0_flush
+
+	movz	x5, #0xf980, lsl #16		// framebuffer 1: 0xf9800000
+	add	x5, x5, x11
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m2_fb1_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m2_fb1_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m2_fb1_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m2_fb1_row
+	mov	x6, x5
+	mov	x12, #11520
+.Lc2s_m2_fb1_flush:
+	dc	civac, x6
+	add	x6, x6, #64
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m2_fb1_flush
+
+	movz	x5, #0xfac0, lsl #16		// framebuffer 2: 0xfac00000
+	add	x5, x5, x11
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m2_fb2_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m2_fb2_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m2_fb2_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m2_fb2_row
+	mov	x6, x5
+	mov	x12, #11520
+.Lc2s_m2_fb2_flush:
+	dc	civac, x6
+	add	x6, x6, #64
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m2_fb2_flush
+
+	dsb	sy
+#endif
 	adr_l	x4, init_task
 	init_cpu_task x4, x5, x6
 

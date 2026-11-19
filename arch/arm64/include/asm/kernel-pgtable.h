@@ -58,8 +58,22 @@
 #define INIT_DIR_SIZE (PAGE_SIZE * (EARLY_PAGES(SWAPPER_PGTABLE_LEVELS, KIMAGE_VADDR, _end, EXTRA_PAGE) \
 				    + EARLY_SEGMENT_EXTRA_PAGES))
 
+#ifdef CONFIG_C2S_DIAG
+/*
+ * Issue #4 diagnostic: the initial ID map additionally covers three
+ * splash framebuffers (0xf1000000/0xf9800000/0xfac00000, each up to
+ * 0x10f6800 bytes, see c2s-rescue/docs/diag-milestones.md). Each range
+ * costs one L2 table plus nine L3 tables (2 MiB blocks + one partial
+ * page table) at 4 KiB granule: 30 page tables in total.
+ */
+#define EARLY_IDMAP_DIAG_EXTRA_PAGES	32
+#else
+#define EARLY_IDMAP_DIAG_EXTRA_PAGES	0
+#endif
+
 #define INIT_IDMAP_DIR_PAGES	(EARLY_PAGES(INIT_IDMAP_PGTABLE_LEVELS, KIMAGE_VADDR, kimage_limit, 1))
-#define INIT_IDMAP_DIR_SIZE	((INIT_IDMAP_DIR_PAGES + EARLY_IDMAP_EXTRA_PAGES) * PAGE_SIZE)
+#define INIT_IDMAP_DIR_SIZE	((INIT_IDMAP_DIR_PAGES + EARLY_IDMAP_EXTRA_PAGES + \
+				  EARLY_IDMAP_DIAG_EXTRA_PAGES) * PAGE_SIZE)
 
 #define INIT_IDMAP_FDT_PAGES	(EARLY_PAGES(INIT_IDMAP_PGTABLE_LEVELS, 0UL, UL(MAX_FDT_SIZE), 1) - 1)
 #define INIT_IDMAP_FDT_SIZE	((INIT_IDMAP_FDT_PAGES + EARLY_IDMAP_EXTRA_FDT_PAGES) * PAGE_SIZE)

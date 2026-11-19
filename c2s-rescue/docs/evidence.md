@@ -25,11 +25,13 @@ e1900000-ffffffff     System RAM
 880000000-affffffff   System RAM   <- last region ends at 0xb00000000
 ```
 
-Consequence for the DTS: the last `memory@80000000` block must be
-`<0x8 0x80000000 0x2 0x80000000>` (size 0x280000000 = 10 GiB,
-top = 0xb00000000). The shipped `exynos990-c2s.dts` had
+Consequence for the DTS: the last `memory@80000000` block must reach
+top = 0xb00000000. The shipped `exynos990-c2s.dts` had
 `0x2 0x7e800000`; fixed in this branch (see
-`arch/arm64/boot/dts/exynos/exynos990-c2s.dts`).
+`arch/arm64/boot/dts/exynos/exynos990-c2s.dts`). The highmem region
+(0x880000000..0xb00000000) is 10 GiB and is now expressed as five 2 GiB
+chunks, because the root now uses `#size-cells = <1>` (32-bit size
+cell) and a single entry cannot exceed 4 GiB.
 
 ### Framebuffer
 
@@ -96,6 +98,53 @@ Vendor reserved-memory children (abox*, camera, ...) overlap the
 **not** in `/proc/iomem` as reserved, which is consistent with using
 it as a simple-framebuffer region chosen by us.
 
+## lk3rd RAM-boot failure root cause: root cell format (issue #4)
+
+Host-side analysis of the lk3rd 2.3 sources (`~/github_repos/lk3rd`,
+tag 2.3, HEAD `602fe05d300a…`) explains why the previous candidates
+showed no sign of life under `fastboot boot`:
+
+- lk3rd with mainline quirks **disabled** (quirks==0, the stock
+  `boot_fb_boot` path) runs `add_dt_memory_node()`
+  (`lib/fdtapi/fdtapi.c`), which **overwrites** the `/memory` `reg`
+  property with 3-cell entries `<u64 addr u32 size>` (a missing node
+  is added; an existing one is replaced — `fdt_add_subnode` returns
+  `-FDT_ERR_EXISTS`, which is ignored, and `set_fdt_val` swaps the
+  value regardless).
+- The kernel then parses `/memory` with `of_flat_dt_get_addr_size_prop()`
+  (`drivers/of/fdt.c`), which requires
+  `len % ((dt_root_addr_cells + dt_root_size_cells) * 4) == 0`.
+  With the previous root (`#address-cells=2`, `#size-cells=2`) the
+  expected stride is 16 bytes but lk3rd writes 12 — every entry is
+  rejected, the kernel sees **0 bytes of RAM** and dies before any
+  console output. That matches the observed total silence (no LCD,
+  no USB re-enumeration).
+- lk3rd with quirks **enabled** (quirks==1, `mainline_boot` path)
+  performs no memory surgery — but then hard-codes
+  `/chosen bootargs = root=/dev/mem0 initrd=0x84000000,0x1000000`
+  and `linux,initrd-start/end`; neutralised by
+  `CONFIG_CMDLINE_FORCE=y`.
+- The quirks flag is persisted in the `lk3rd` partition at offset
+  0x175000; its power-on default (erased flash) is unknown, so the
+  active path per boot is not known from the host.
+
+Fix: the root of `exynos990-c2s.dts` now uses the stock cell format
+`#address-cells = <2>`, `#size-cells = <1>`; every root-level `reg`
+(including `/memory` and the `/chosen` framebuffer, whose cells are
+taken from the parent) is expressed in 3-cell form, and the 10 GiB
+highmem region is split into five 2 GiB chunks (32-bit size cell).
+`/reserved-memory` must match the root cells
+(`__reserved_mem_check_root()` returns `-EINVAL` otherwise), so it
+and both children were converted to 2/1 + 3-cell `reg` as well.
+All 74+ root-level anchor nodes in `c2s-overlay-anchors.dtsi`
+already carry 3-cell `reg` and are correct under the new root
+without regeneration (regenerated output verified byte-identical).
+
+New gates in `c2s-rescue/scripts/verify.sh`: root cells must be 2/1
+and every root-level `reg` a 3-cell multiple; `/reserved-memory`
+must carry `#size-cells = <0x01>`; the memory spelling gate now
+matches the five-chunk split ending at 0xb00000000.
+
 ## Kernel / initramfs build evidence
 
 Environment (also in `build-record.txt` / `build.log`, produced by
@@ -118,7 +167,9 @@ committed to the repo):
 | busybox-static 1.37.0-7ubuntu1 arm64 .deb | `fcf50794faf920455895d7ef103d1c54b9ebf7f18d2e52982dbf3903b7769592` |
 | extracted `/usr/bin/busybox` | `c2f279d1d5640a0f327890d41cad594c0f059f3fed3f96dd72fdcc4f5e18ec02` |
 
-Artifacts (byte-identical across two consecutive builds):
+Artifacts (byte-identical across two consecutive builds; issue #1
+state - the DTB has since gained `/__symbols__` via `dtc -@`, see
+`build-record.md`):
 
 | Artifact | Size | sha256 |
 |---|---|---|
@@ -153,8 +204,33 @@ dropbearkey sha256 17f4e9a03f2d48cabd26358feabe11ed8d35f930f01ce11e8956c6df3f037
 
 ## Host verification evidence (`verify.sh`)
 
-`c2s-rescue/scripts/verify.sh` runs 79 checks, all passing on the
-artifacts above:
+`c2s-rescue/scripts/verify.sh` runs 140 checks, all passing on the
+current artifacts. Beyond the issue #1 checks below it now covers
+(issue #4): the shipped-archive applet symlinks, the console font
+(`FONTS`/`FONT_TER16x32` config, `fbcon=font:TER16x32` in the embedded
+cmdline and in the Image strings), and the boot menu - the exact
+`rescue-menu-keys` binary from the archive is executed via qemu-user
+against representative event streams (press/release/autorepeat/EV_SYN/
+foreign keys, delayed fifo streams, gpio-keys NOT at event0 via a fake
+sysfs tree, timeout, serial line handling incl. the drain window that
+discards echoed menu text) and must always select `telnet` ONLY via an
+explicit volume-down press or the serial line `telnet`; the packaged
+`boot.img` dt slot is parsed independently (Samsung DT table magic
+`0xd7b7ab1e` at the exact offset sboot computes, FDT byte-equal to the
+kbuild DTB, `/__symbols__` present - the node sboot's libufdt overlay
+step needs, whose absence stopped the previous candidate on the device
+with "No node __symbols__ in main dtb.") and verified with avbtool.
+A further section replays sboot's DTBO merge locally with `fdtoverlay`:
+the built DTB must accept all 9 stock `dtbo.img` entries
+(the overlay's `/__fixups__` resolves through the base `/__symbols__`),
+with a positive control (stock base passes all 9 - proves the tool
+invocation works) and a negative control (the anchorless predecessor
+DTB fails - proves the gate detects the defect the anchor nodes in
+`arch/arm64/boot/dts/exynos/c2s-overlay-anchors.dtsi`, generated by
+`c2s-rescue/scripts/gen-overlay-anchors.py`, fix; 138 of 225 labels
+required by the stock overlays were missing from the base tree).
+The fixtures live host-only in `/tmp/opencode/dtbo-fixtures` and are
+never committed.
 
 - kernel config: ~35 required `=y` symbols, `CONFIG_MODULES` unset,
   `CONFIG_INITRAMFS_SOURCE` pointing at the staged archive, pinned

@@ -132,6 +132,24 @@ echo "dropbear sha256:    $(sha256_of "${DROPBEAR_BIN}")" | tee -a "${LOG}"
 echo "dropbearkey sha256: $(sha256_of "${DROPBEARKEY_BIN}")" | tee -a "${LOG}"
 file "${DROPBEAR_BIN}" | tee -a "${LOG}"
 
+# ----------------------------------------------------- rescue-menu-keys
+# The boot menu input front end is a small static aarch64 C program: it
+# keeps every gpio-keys evdev device and the USB ACM serial line open in
+# one persistent poll loop (the shell variant re-opened the device for
+# every read, which loses queued evdev events - the keys looked dead),
+# handles raw tty/no-echo and the press/release/repeat semantics.
+step "building rescue-menu-keys (aarch64, static)"
+KEYS_SRC="${RESCUE_DIR}/src/rescue-menu-keys.c"
+if [ ! -f "${KEYS_SRC}" ]; then
+	echo "missing source: ${KEYS_SRC}" >&2
+	exit 1
+fi
+run "rescue-menu-keys compile" aarch64-linux-gnu-gcc \
+	-O2 -Wall -Wextra -static -s \
+	-o "${WORK}/rescue-menu-keys" "${KEYS_SRC}"
+echo "rescue-menu-keys sha256: $(sha256_of "${WORK}/rescue-menu-keys")" | tee -a "${LOG}"
+file "${WORK}/rescue-menu-keys" | tee -a "${LOG}"
+
 # ------------------------------------------------------------- root staging
 ROOT="${WORK}/root"
 mkdir -p "${ROOT}/bin" "${ROOT}/sbin" "${ROOT}/usr/bin" "${ROOT}/usr/sbin" \
@@ -145,7 +163,7 @@ APPLETS="sh ash mount umount mkdir rmdir mknod ln ls cat cp mv rm dmesg sleep \
 hostname ip ifconfig route grep sed awk vi less more head tail cut tr sort \
 kill killall pidof ps top setsid cttyhack telnet telnetd udhcpc udhcpd nc \
 netstat sysctl login passwd printf test chmod chown stat dd tar gzip gunzip \
-uname env date echo expr find xargs tee touch which"
+uname env date echo expr find xargs tee touch which timeout od"
 for a in ${APPLETS}; do
 	ln -sf /bin/busybox "${ROOT}/bin/${a}"
 done
@@ -167,6 +185,10 @@ cp "${RESCUE_DIR}/initramfs/etc/rescue.conf" "${ROOT}/etc/rescue.conf"
 mkdir -p "${ROOT}/usr/bin"
 cp "${RESCUE_DIR}/initramfs/usr/bin/rescue-telnet" "${ROOT}/usr/bin/rescue-telnet"
 chmod 0755 "${ROOT}/usr/bin/rescue-telnet"
+cp "${RESCUE_DIR}/initramfs/usr/bin/rescue-menu" "${ROOT}/usr/bin/rescue-menu"
+chmod 0755 "${ROOT}/usr/bin/rescue-menu"
+cp "${WORK}/rescue-menu-keys" "${ROOT}/usr/bin/rescue-menu-keys"
+chmod 0755 "${ROOT}/usr/bin/rescue-menu-keys"
 chmod 0644 "${ROOT}/etc/rescue.conf" "${ROOT}/etc/issue" "${ROOT}/etc/shells"
 
 # SSH host keys are generated on the device at first boot (-R); the operator's
@@ -213,7 +235,14 @@ LIST="${WORK}/cpio.list"
 	echo "file /etc/issue ${ROOT}/etc/issue 0644 0 0"
 	echo "file /etc/rescue.conf ${ROOT}/etc/rescue.conf 0644 0 0"
 	echo "file /usr/bin/rescue-telnet ${ROOT}/usr/bin/rescue-telnet 0755 0 0"
-	echo "slink /bin/sh /bin/busybox 0755 0 0"
+	echo "file /usr/bin/rescue-menu ${ROOT}/usr/bin/rescue-menu 0755 0 0"
+	echo "file /usr/bin/rescue-menu-keys ${ROOT}/usr/bin/rescue-menu-keys 0755 0 0"
+	# Every applet /init calls must be resolvable by name: emit one symlink
+	# per staged applet (regression for the issue #4 defect where only
+	# /bin/sh made it into the archive while /init calls mount, ip, ln ...).
+	for a in ${APPLETS}; do
+		echo "slink /bin/${a} /bin/busybox 0755 0 0"
+	done
 	echo "slink /sbin/init /init 0755 0 0"
 	# The kernel opens /dev/console before it executes /init
 	# (console_on_rootfs(), init/main.c), so the node must exist in the cpio.
