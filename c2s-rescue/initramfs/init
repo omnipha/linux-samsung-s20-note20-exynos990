@@ -15,13 +15,50 @@
 #   - busybox telnetd, debug/rescue opt-in only: RESCUE_ENABLE_TELNET=1
 #     in /etc/rescue.conf AND the /etc/enable-telnet marker file.
 #
+# Console channels:
+#   - framebuffer console (/dev/console, console=tty0): what the kernel
+#     opened for us before exec'ing this script.
+#   - USB ACM serial console (ttyGS0, console=ttyGS0): registered by the
+#     kernel when the ACM function instance is created below
+#     (gs_console_init(), u_serial.c). Everything this PID 1 writes goes
+#     through /dev/kmsg, so a single write fans out to *both* consoles
+#     and is kept for `dmesg` over SSH. Kernel and init output are thus
+#     readable over the USB cable before, and completely without, the
+#     network path - and without any display being present.
+#
 # Shell: busybox ash (POSIX sh).
 
 export PATH=/usr/bin:/bin:/sbin:/usr/sbin
 
 . /etc/rescue.conf
 
-log() { echo "c2s-rescue: $*"; }
+# ------------------------------------------------------------------ log
+# Every init message goes into the kernel ring buffer via /dev/kmsg, from
+# where *all* enabled consoles print it: the framebuffer console
+# (console=tty0) and the USB ACM serial console (console=ttyGS0). The
+# USB console is the rescue channel, so init output must reach it even
+# when no display is attached and even when the network path is dead.
+#
+# /dev/kmsg is used on purpose instead of writing to /dev/ttyGS0
+# directly: the USB serial *console* drops what does not fit into its
+# 8 KiB buffer (u_serial.c counts the dropped bytes) instead of blocking,
+# while a plain write to the tty blocks once the 8 KiB TX buffer is full
+# and the host is not reading. A blocked PID 1 would take down the whole
+# rescue channel (dropbear, menu, supervision).
+#
+# The line stays in the ring buffer as well, so `dmesg` over SSH returns
+# the complete boot log - including the part that was dropped from the
+# 8 KiB USB console buffer.
+#
+# KMSG can be overridden (used by the host-side verification).
+KMSG="${KMSG:-/dev/kmsg}"
+
+log() {
+    if [ -w "${KMSG}" ]; then
+        echo "c2s-rescue: $*" > "${KMSG}" 2> /dev/null && return 0
+    fi
+    echo "c2s-rescue: $*"
+}
 
 # ---------------------------------------------------------------- mounts
 mount -t proc     proc     /proc
@@ -71,9 +108,22 @@ gadget_setup() {
     # high-speed (composite.c), so 500 is the USB 2.0 maximum.
     echo 500 > "$cfg/configs/c.1/MaxPower"
 
+    # ACM FIRST: creating this instance allocates gserial line 0, and
+    # gserial_alloc_line() calls gs_console_init() for line 0
+    # (drivers/usb/gadget/function/u_serial.c), which register_console()s
+    # the ttyGS console with CON_PRINTBUFFER. The kernel replay of the
+    # boot log into that console, and therefore every later printk, then
+    # goes to the USB serial port - before any network interface exists.
+    # The tty device node /dev/ttyGS0 appears here as well (devtmpfs).
+    # NCM/RNDIS do not allocate gserial lines, so ACM always is ttyGS0.
+    mkdir -p "$cfg/functions/acm.usb2" || return 1
+    # Make the console binding explicit (idempotent: gs_console_init()
+    # returns immediately if port->console is set). Guarded, because the
+    # configfs attribute only exists with CONFIG_U_SERIAL_CONSOLE.
+    echo 1 > "$cfg/functions/acm.usb2/console" 2>/dev/null || true
+
     mkdir -p "$cfg/functions/ncm.usb0"   || return 1
     mkdir -p "$cfg/functions/rndis.usb1" || return 1
-    mkdir -p "$cfg/functions/acm.usb2"   || return 1
 
     echo "ncm%d"   > "$cfg/functions/ncm.usb0/ifname"   || return 1
     echo "rndis%d" > "$cfg/functions/rndis.usb1/ifname" || return 1

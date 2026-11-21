@@ -361,3 +361,78 @@ byte-unchanged: the diag build went into a separate outdir, and the diag
 DTB sha256 equals the reference DTB sha256 (`6afe6322…`), proving the
 device-tree is untouched. Hardware readout (panel photo after
 `fastboot boot`) remains blocked by the device coordinator lock.
+
+## Issue #4: USB-C rescue channel (ACM/ttyGS console)
+
+The rescue image now carries an **independent USB serial console** in
+addition to the gadget network interfaces, so that kernel and init
+messages are readable over the USB cable before (and completely without)
+the network path and without any display being attached.
+
+### What changed
+
+| Item | Change |
+|---|---|
+| `arch/arm64/configs/c2s_rescue_defconfig` | `CONFIG_U_SERIAL_CONSOLE=y`; `CONFIG_CMDLINE` = `console=ttyGS0 loglevel=7 ignore_loglevel fbcon=font:TER16x32 console=tty0 printk.devkmsg=on` |
+| `c2s-rescue/initramfs/init` | ACM function instance created **first**; `log()` writes through `/dev/kmsg` |
+| `c2s-rescue/scripts/verify.sh` | 11 new gates (USB serial console: config + Image + init ordering) |
+
+### Why this order and these details
+
+* `console=ttyGS0` is the **first** console= token, `console=tty0` the
+  **last** one. The last `console=` token is the preferred console
+  (`preferred_console` in `__add_preferred_console()`,
+  `kernel/printk/printk.c`), i.e. what a later open of `/dev/console`
+  resolves to: the framebuffer behaviour (and the `fbcon=font:TER16x32`
+  gate) is unchanged. `ttyGS0` is nevertheless *enabled* as well, and
+  every enabled console prints every `printk` message - so the USB line
+  receives the whole log.
+* `CONFIG_U_SERIAL_CONSOLE=y` is what makes the console exist at all:
+  `gs_console_init()` (`drivers/usb/gadget/function/u_serial.c`)
+  `register_console()`s `ttyGS` with `CON_PRINTBUFFER`, so the ring
+  buffer is replayed into the USB line when the console appears.
+* The console is registered when the ACM function instance is created
+  (`acm_alloc_instance()` -> `gserial_alloc_line()` -> `gs_console_init()`
+  for line 0), therefore `/init` creates `acm.usb2` **before** NCM/RNDIS.
+  NCM/RNDIS do not allocate gserial lines, so ACM is always `ttyGS0`.
+  `gserial_alloc_line()` only inits the console for **port 0**; the
+  explicit `echo 1 > .../acm.usb2/console` is the idempotent explicit
+  form of the same thing and is guarded (`2>/dev/null || true`) because
+  the configfs attribute only exists with `CONFIG_U_SERIAL_CONSOLE`.
+* `printk.devkmsg=on`: `devkmsg_write()` (`kernel/printk/printk.c`)
+  ratelimits writes to `/dev/kmsg` unless this is set, and init lines
+  would be dropped silently.
+* init writes through `/dev/kmsg` instead of writing to `/dev/ttyGS0`
+  directly: the USB serial *console* drops what does not fit into its
+  8 KiB buffer (counted as `missed` bytes in `u_serial.c`) instead of
+  blocking, while a plain write to the tty blocks once the 8 KiB TX
+  buffer is full and the host does not read. A blocked PID 1 would take
+  down the whole rescue channel (dropbear, menu, supervision). The
+  `/dev/kmsg` route keeps the line in the ring buffer as well, so
+  `dmesg` over SSH returns the complete boot log.
+
+### Artifacts (build host, `/tmp/opencode/c2s-out`)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `Image` | 11,891,200 B | `391777429f6f7a406eb71bdbe9c87c2097b21985625344acc417532876d70af4` |
+| `exynos990-c2s.dtb` | 141,740 B | `6afe6322273ffed7207eb14235d2ad7d9c4de2ba63f86bf8f97fc75ffcc799f6` |
+| `initramfs.cpio.gz` | 2,493,164 B | `86206c81ff433ee2176df77c68f1ccc25e18b534511e3eaf02fd78db6cfb8bb1` |
+| `boot.img` | 61,865,984 B | `6970207865d6cbb3295521bb63a2e45ff39560931d3481f7b62f4fc15c1cdd3d` |
+
+The DTB is byte-identical to the previous candidate (`6afe6322…`): the
+device tree was not touched by this change.
+
+### Verification
+
+`c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-out` -> **150 passed,
+0 failed** (139 before, +11 new gates). Covered by the new gates:
+`CONFIG_U_SERIAL_CONSOLE=y`, `console=ttyGS0` in the built config and
+in the embedded Image command line, `console=tty0` as the last console=
+token, `printk.devkmsg=on`, the `ttyGS` driver name in the Image, ACM
+created before NCM/RNDIS in `/init`, the non-fatal console attribute
+write, `log()` writing through `/dev/kmsg`, and the unchanged
+key-only dropbear path. The pre-existing gates (boot-image DT table,
+`avbtool verify_image`, DTB sanity, stock DTBO overlay compatibility,
+initramfs cpio/applet regression, telnet gate, host-run dropbear
+key-only smoke test) still pass unchanged.

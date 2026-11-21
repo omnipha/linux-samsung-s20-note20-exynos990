@@ -165,6 +165,50 @@ else
 	bad "TER16x32 font not found in the Image"
 fi
 
+# ------------------------------------------ USB serial console (issue #4)
+# The rescue channel must be readable without the network and without a
+# display: printk fans out to the ttyGS console as soon as /init creates
+# the ACM function instance (gs_console_init(), u_serial.c). Without the
+# cmdline entry register_console() leaves it disabled
+# (try_enable_preferred_console() -ENOENT), and without U_SERIAL_CONSOLE
+# the console does not exist at all.
+section "USB serial console (ACM/ttyGS)"
+require_cfg U_SERIAL_CONSOLE y
+if grep -q 'CONFIG_CMDLINE=.*console=ttyGS0' "${CONFIG}"; then
+	ok "CONFIG_CMDLINE selects console=ttyGS0"
+else
+	bad "CONFIG_CMDLINE does not select console=ttyGS0"
+fi
+# console=tty0 must be the LAST console= token: the last console= wins
+# (preferred_console in __add_preferred_console(), printk.c), and that is
+# what /dev/console resolves to, so the existing framebuffer behaviour
+# and the font gates are unaffected. ttyGS0 is still enabled and receives
+# every printk message (all enabled consoles print), it just is not the
+# preferred one.
+LAST_CONSOLE=$(grep -o 'console=[^ ]*' "${CONFIG}" | tail -n1)
+if [ "${LAST_CONSOLE}" = "console=tty0" ]; then
+	ok "CONFIG_CMDLINE keeps console=tty0 as the last console= token"
+else
+	bad "CONFIG_CMDLINE last console= token is '${LAST_CONSOLE:-none}', want console=tty0"
+fi
+if grep -q "console=ttyGS0" "${IMG_STRINGS}"; then
+	ok "Image embeds console=ttyGS0 in its command line"
+else
+	bad "Image command line lacks console=ttyGS0"
+fi
+# printk.devkmsg=on: init feeds its own output through /dev/kmsg, which
+# devkmsg_write() ratelimits (silently dropping lines) unless it is set.
+if grep -q "printk.devkmsg=on" "${IMG_STRINGS}"; then
+	ok "Image embeds printk.devkmsg=on (init lines are not ratelimited)"
+else
+	bad "Image command line lacks printk.devkmsg=on"
+fi
+if grep -q "ttyGS" "${IMG_STRINGS}"; then
+	ok "Image contains the ttyGS console driver name"
+else
+	bad "ttyGS console name not found in the Image"
+fi
+
 # ------------------------------------------------------------ initramfs cpio
 section "initramfs contents"
 UNPACK="${OUTDIR}/verify-root"
@@ -281,6 +325,40 @@ if grep -n 'telnet_armed()' -A3 "${INIT}" | grep -q 'RESCUE_ENABLE_TELNET'; then
 else
 	bad "init: telnet_armed does not check the config flag"
 fi
+
+# ------------------------------------------- USB serial console (/init)
+# The channel must work even when gadget setup fails later, so the ACM
+# function instance has to be created before NCM/RNDIS and before any
+# network address: gs_console_init() (from acm_alloc_instance() ->
+# gserial_alloc_line(), port 0) is what register_console()s ttyGS, and
+# init messages must go through /dev/kmsg so they fan out to it.
+section "USB serial console init ordering and logging"
+ACM_MK=$(grep -n 'functions/acm' "${INIT}" | head -n1 | cut -d: -f1)
+NCM_MK=$(grep -n 'functions/ncm' "${INIT}" | head -n1 | cut -d: -f1)
+if [ -n "${ACM_MK}" ] && [ -n "${NCM_MK}" ] && [ "${ACM_MK}" -lt "${NCM_MK}" ]; then
+	ok "init: ACM function instance created before NCM/RNDIS"
+else
+	bad "init: ACM is not the first function instance (ACM line ${ACM_MK:-?}, NCM line ${NCM_MK:-?})"
+fi
+# the console configfs attribute only exists with CONFIG_U_SERIAL_CONSOLE
+# and must not abort gadget setup when it is missing
+grep -q 'acm.usb2/console' "${INIT}" \
+	&& ok "init: ACM console attribute written" \
+	|| bad "init: ACM console attribute not written"
+if grep -Eq '2>/dev/null \|\| true' "${INIT}"; then
+	ok "init: console attribute write is non-fatal"
+else
+	bad "init: console attribute write may abort gadget setup"
+fi
+# init's own output must be routed through the kernel log, otherwise it
+# only reaches /dev/console (framebuffer) and never the ttyGS console
+grep -q 'dev/kmsg' "${INIT}" \
+	&& ok "init: log() writes through /dev/kmsg (reaches ttyGS console)" \
+	|| bad "init: log() does not write to /dev/kmsg"
+# key-only SSH must still be the only shell path
+grep -q 'start_dropbear' "${INIT}" \
+	&& ok "init: dropbear start logic present" \
+	|| bad "init: dropbear start logic missing"
 
 # ------------------------------------------------- boot menu functional
 # Exercise the shipped rescue-menu (wrapper) and rescue-menu-keys (input

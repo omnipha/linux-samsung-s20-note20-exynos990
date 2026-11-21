@@ -35,7 +35,28 @@ CONFIG_LOCALVERSION="-c2s-rescue"
 # (fb_console_setup() -> find_font(), drivers/video/fbdev/core/fbcon.c);
 # it is an *approach* for the on-screen readability target and must be
 # confirmed on the real framebuffer before it is reported as measured.
-CONFIG_CMDLINE="console=tty0 loglevel=7 ignore_loglevel fbcon=font:TER16x32"
+#
+# console= order matters: the LAST console= token is the preferred
+# console (preferred_console in __add_preferred_console(),
+# kernel/printk/printk.c), i.e. what a later open of /dev/console gets:
+#   console=ttyGS0  USB gadget ACM serial port "ttyGS", index 0
+#                   (gs_console_device(), drivers/usb/gadget/function/
+#                   u_serial.c) - only exists once /init creates the
+#                   configfs ACM function, so it is a no-op during early
+#                   boot; without this entry register_console() fails to
+#                   enable it (try_enable_preferred_console() returns
+#                   -ENOENT) and nothing would ever reach the USB port.
+#                   Its CON_PRINTBUFFER then replays the boot log, so
+#                   kernel messages are readable over USB before any
+#                   network interface exists.
+#   console=tty0    stays LAST, so /dev/console keeps resolving to the
+#                   framebuffer console as before (display behaviour and
+#                   the existing console font gates are unchanged).
+# printk.devkmsg=on: /init feeds its own output into the kernel log so
+# that one write reaches both consoles and `dmesg`; devkmsg_write()
+# (kernel/printk/printk.c) ratelimits /dev/kmsg writes unless this is
+# set, and init lines would be dropped silently.
+CONFIG_CMDLINE="console=ttyGS0 loglevel=7 ignore_loglevel fbcon=font:TER16x32 console=tty0 printk.devkmsg=on"
 CONFIG_CMDLINE_FORCE=y
 # Compiled-in fonts: without CONFIG_FONTS only the autoselected default
 # (8x16) exists and fbcon=font:TER16x32 would fall back to it silently.
@@ -55,6 +76,12 @@ CONFIG_FB_SIMPLE=y
 CONFIG_FRAMEBUFFER_CONSOLE=y
 CONFIG_USB_DWC3=y
 CONFIG_USB_GADGET=y
+# USB serial console: gs_console_init() registers ttyGS0 as a console
+# (u_serial.c) when /init creates the configfs ACM function instance;
+# together with console=ttyGS0 in CONFIG_CMDLINE this is the rescue
+# channel for kernel messages - independent of the display and of the
+# network path (see the CONFIG_CMDLINE comment below).
+CONFIG_U_SERIAL_CONSOLE=y
 CONFIG_USB_CONFIGFS=y
 CONFIG_USB_CONFIGFS_ACM=y
 CONFIG_USB_CONFIGFS_NCM=y
