@@ -56,6 +56,17 @@ and dropbear is never started by `/init` (it logs
 also be added later by mounting the rescue system from an already
 running rescue instance.
 
+**The deliverable must be built WITH the key.** A packaged image
+without `/root/.ssh/authorized_keys` cannot provide SSH even if USB
+works - that is the blocker that disqualified candidate `4b823391…`.
+`verify.sh` now proves the key from the packaged `boot.img` itself
+(section "packaged boot.img: root/.ssh/authorized_keys"): the ramdisk
+slot is sliced out of the image, the cpio entry is read directly, and
+its OpenSSH fingerprint must equal the source key's fingerprint with
+mode 0600. Use
+`c2s-rescue/scripts/prove-authorized-keys.sh boot.img ~/.ssh/id_ed25519.pub`
+to check an artifact by hand.
+
 ## Booting (manual, not performed here)
 
 The build produces the artifacts the vendor bootloader consumes. Since
@@ -253,3 +264,22 @@ the host-side evidence cannot show:
 5. Close issue #4 only after these device observations; host
    verification (170 gates + 5 fault cases) is necessary evidence, not
    sufficient.
+
+## Current candidate (SSH key included)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `boot.img` | 61,865,984 B | `5a0426dc8eae34bd8acb17cd5617fbad243b9d33485f0139ee43f46e9a36cd19` |
+| `Image` | 11,760,128 B | `e76231352894124d2434e130f338ad2842848c86e4a4425644af9caee59a2f69` |
+| `initramfs.cpio.gz` | 2,496,684 B | `eaa35da0a3029b371af55fc19c7049ac52f0ce893dd451a559c0a0a0ee48ce8d` |
+
+Packaged with the operator's public key (fingerprint
+`SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE`, mode 0600 inside
+the initramfs, proven from the image) and a `SHA256_RSA4096` /
+rollback 13 AVB footer signed with the authorized host key.
+
+Host verification: **174 passed, 0 failed** (`verify.sh`, serial run),
+plus 10/10 host fault-injection checks for the ACM-independent
+fallback. Nothing here demonstrates a boot, USB enumeration, serial
+console output or SSH login - those need the coordinator's hardware
+run.

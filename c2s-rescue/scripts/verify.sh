@@ -883,6 +883,51 @@ PYEOF
 		bad "avbtool info_image failed on the packaged boot.img"
 	fi
 	rm -f "${AVBINFO}"
+
+	# ------------------------------------ packaged artifact carries SSH key
+	# Coordinator blocker regression: an image whose initramfs lacks
+	# root/.ssh/authorized_keys cannot provide SSH even if USB works.
+	# The proof is taken FROM boot.img itself: the ramdisk slot is
+	# sliced out of the packaged image, the gzip stream decompressed and
+	# the newc cpio entry read directly - the staging tree is never
+	# consulted. Fingerprints are compared, no key material printed.
+	section "packaged boot.img: root/.ssh/authorized_keys"
+	AK_SRC="${C2S_AUTHORIZED_KEYS:-}"
+	if [ -z "${AK_SRC}" ] || [ ! -f "${AK_SRC}" ]; then
+		if [ -f "${HOME}/.ssh/id_ed25519.pub" ]; then
+			AK_SRC="${HOME}/.ssh/id_ed25519.pub"
+			note "C2S_AUTHORIZED_KEYS unset; comparing against ${AK_SRC}"
+		else
+			AK_SRC=""
+		fi
+	fi
+	if [ -z "${AK_SRC}" ]; then
+		bad "no source public key available to compare against (set C2S_AUTHORIZED_KEYS)"
+	else
+		AK_OUT=$(bash "${SCRIPT_DIR}/prove-authorized-keys.sh" \
+			"${OUTDIR}/boot.img" "${AK_SRC}" 2>&1)
+		AK_RC=$?
+		printf '%s\n' "${AK_OUT}" > "${OUTDIR}/prove-authorized-keys.log"
+		# report the outcomes as individual gates
+		if printf '%s\n' "${AK_OUT}" | grep -q 'NOT FOUND'; then
+			bad "packaged initramfs has NO root/.ssh/authorized_keys (SSH impossible)"
+		else
+			ok "packaged boot.img ramdisk contains root/.ssh/authorized_keys (read from the image, not the staging tree)"
+		fi
+		if printf '%s\n' "${AK_OUT}" | grep -q '^PASS: fingerprint'; then
+			ok "packaged authorized_keys fingerprint == source public key fingerprint"
+		else
+			bad "packaged authorized_keys fingerprint differs from the source key"
+		fi
+		if printf '%s\n' "${AK_OUT}" | grep -q '^PASS: packaged authorized_keys is a regular file'; then
+			ok "packaged authorized_keys mode 0600 (regular file, from the cpio header)"
+		else
+			bad "packaged authorized_keys mode is not 0600"
+		fi
+		if [ "${AK_RC}" -ne 0 ]; then
+			bad "prove-authorized-keys.sh exited ${AK_RC} (see ${OUTDIR}/prove-authorized-keys.log)"
+		fi
+	fi
 else
 	note "no packaged boot.img in ${OUTDIR}; DT-table checks skipped"
 fi

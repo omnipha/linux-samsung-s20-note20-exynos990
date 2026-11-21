@@ -302,3 +302,37 @@ no reboot). The previous candidate is superseded; see
 * Not proven here: that the device boots this image, that the USB
   console or SSH is reachable on hardware, and that the device accepts
   the AVB chain. Those require the coordinator's hardware run.
+
+## Issue #4 SSH-key blocker (candidate `4b823391…` -> candidate `5a0426dc…`)
+
+Coordinator finding: the packaged initramfs of `4b823391…` contained no
+`root/.ssh/authorized_keys` ("NOTE: no C2S_AUTHORIZED_KEYS given" in the
+build log) and `/init` skips dropbear without it - that artifact could
+not provide SSH. Host-only remediation (no device access):
+
+* rebuilt the identical baseline with
+  `C2S_AUTHORIZED_KEYS=$HOME/.ssh/id_ed25519.pub` and repackaged with
+  `C2S_AVB_KEY`; private keys were never read, printed or committed.
+* proof taken from the **exact boot.img** with
+  `c2s-rescue/scripts/prove-authorized-keys.sh`: Android boot header
+  parsed -> ramdisk slot sliced (offset 11763712, 2,496,684 B) ->
+  gzip decompressed -> newc cpio entry read directly:
+  `mode=100600` (regular file, 0600), size 97 B,
+  content sha256 `153d52616cdce489bf501401c79e12382e66053e85e787fbc925954e0e122c38`,
+  OpenSSH fingerprint `SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE`
+  on both sides - identical to the source public key.
+* AVB unchanged and re-proven on the new image:
+  `Algorithm: SHA256_RSA4096`, `Rollback Index: 13`, public key sha1
+  `fcbc02ced423008be3a706f4e85a7366e9b4db6f`, and
+  `avbtool verify_image --image boot.img --key $C2S_AVB_KEY` passes.
+* unchanged: `CONFIG_C2S_DIAG` off (config + Image instruction scan +
+  `primary_entry` disassembly, with positive control), the
+  ACM-independent gadget state machine (`/usr/lib/c2s-gadget.sh`),
+  DT table and stock DTBO overlay gates (9/9), telnet off, key-only
+  dropbear, host fault injection 10/10.
+* `verify.sh` -> 174 passed, 0 failed (4 new gates prove the packaged
+  key from the image, so a rebuild without `C2S_AUTHORIZED_KEYS` now
+  fails verification instead of shipping an SSH-less image).
+
+Not proven (hardware only): boot, USB enumeration, ttyGS console
+delivery, dropbear startup, and a successful SSH login with this key.

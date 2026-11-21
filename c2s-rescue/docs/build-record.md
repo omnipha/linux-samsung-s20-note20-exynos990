@@ -590,3 +590,86 @@ disassembly, ACM-fallback state machine structure, single-UDC bind
 site, console-only SSH gate, shipped `c2s-gadget.sh`, fault-injection
 run + its stated limitations, AVB algorithm/signature gates, capture
 helper documentation).
+
+## Issue #4: SSH key baked into the packaged artifact (coordinator blocker)
+
+The coordinator found a confirmed blocker in candidate
+`4b823391eea9e14014eee5129e68f847be6e5b38e85d91b963f041518e34e5e7`
+(61,865,984 B): its packaged initramfs had **no**
+`root/.ssh/authorized_keys` (build log: "NOTE: no C2S_AUTHORIZED_KEYS
+given"), and `/init` deliberately skips dropbear when that file is
+absent - so that artifact could not provide SSH even if USB worked. It
+is **not** hardware-ready and is superseded.
+
+The same baseline was rebuilt and repackaged with the operator's public
+key supplied through `C2S_AUTHORIZED_KEYS`:
+
+```
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+C2S_AVB_KEY=/path/to/avb_key.pem \
+c2s-rescue/scripts/build.sh --outdir /tmp/opencode/c2s-out
+C2S_AVB_KEY=/path/to/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-out
+```
+
+No key material is printed or committed: only the *public* key is baked
+in (mode 0600 inside the initramfs), the private key never leaves the
+operator's `~/.ssh`, and the AVB key stays on the build host.
+
+### Independent proof from the exact artifact
+
+`c2s-rescue/scripts/prove-authorized-keys.sh <boot.img> <pubkey>` does
+not look at the staging tree at all: it parses the Android boot image
+header, slices the ramdisk slot out of `boot.img`, decompresses the
+gzip stream and reads the newc cpio entry (mode and contents come from
+the archive's own headers). Result for this artifact:
+
+```
+entry /root/.ssh/authorized_keys: cpio mode=100600 (regular file), size=97
+entry content sha256: 153d52616cdce489bf501401c79e12382e66053e85e787fbc925954e0e122c38
+src fingerprint:      SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE
+packaged fingerprint: SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE
+PASS: fingerprint of the packaged authorized_keys matches the source public key
+PASS: packaged authorized_keys is a regular file (S_IFREG) with mode 0600
+```
+
+The proof is part of `verify.sh` (section "packaged boot.img:
+root/.ssh/authorized_keys"), so a future build that forgets
+`C2S_AUTHORIZED_KEYS` fails the verification instead of silently
+shipping an SSH-less image.
+
+### Artifacts of this build (build host, `/tmp/opencode/c2s-out`)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `boot.img` | 61,865,984 B | `5a0426dc8eae34bd8acb17cd5617fbad243b9d33485f0139ee43f46e9a36cd19` |
+| `Image` | 11,760,128 B | `e76231352894124d2434e130f338ad2842848c86e4a4425644af9caee59a2f69` |
+| `initramfs.cpio.gz` | 2,496,684 B | `eaa35da0a3029b371af55fc19c7049ac52f0ce893dd451a559c0a0a0ee48ce8d` |
+| `exynos990-c2s.dtb` | 141,740 B | `6afe6322273ffed7207eb14235d2ad7d9c4de2ba63f86bf8f97fc75ffcc799f6` (unchanged) |
+
+The `Image` hash differs from the previous candidate
+(`5489149e…`) only because the initramfs (with the key) is embedded in
+the kernel; the kernel code itself is unchanged - same size
+(11,760,128 B), same `CONFIG_C2S_DIAG` state, same DT table, same
+`c2s-gadget.sh` state machine with the ACM-independent fallback.
+
+AVB (unchanged policy): `Algorithm: SHA256_RSA4096`, `Rollback Index:
+13`, public key sha1 `fcbc02ced423008be3a706f4e85a7366e9b4db6f`;
+`avbtool verify_image --image boot.img --key $C2S_AVB_KEY` passes.
+
+### Verification
+
+`c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-out` -> **174 passed,
+0 failed** (170 before, +4: the packaged-artifact authorized_keys
+presence, fingerprint match, mode 0600 and the helper's exit status).
+
+### What is still NOT proven
+
+Host verification proves that the artifact ships the operator's public
+key with the right mode and that the AVB footer is signed by the
+authorized key. It proves **nothing** about the device: not that the
+image boots, not that USB enumerates, not that the ttyGS console
+delivers messages, not that dropbear starts or that SSH accepts the key
+(`/init` still requires at least one USB network interface for
+dropbear - with only the ACM console there is nothing to bind to).
+Those remain hardware questions for the coordinator.
