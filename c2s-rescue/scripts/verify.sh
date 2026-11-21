@@ -133,6 +133,114 @@ else
 	bad "CONFIG_MODULES=y (modules are not part of the rescue design)"
 fi
 
+# ------------------------------------- minimal USB baseline (no C2S_DIAG)
+# The minimal USB baseline must not carry the diagnostic framebuffer
+# code (first-instruction stores into 0xf1000000/0xf9800000/0xfac00000
+# from head.S plus the extra initial ID-map coverage). The gate runs on
+# the FINAL .config and on the FINAL Image bytes/disassembly - not on
+# the sources - so a stray CONFIG_C2S_DIAG=y (or code that escaped the
+# ifdef) cannot pass.
+section "minimal USB baseline (CONFIG_C2S_DIAG off)"
+DIAG_REF_IMG="${C2S_DIAG_REF_IMAGE:-/tmp/opencode/c2s-diag-ref/Image.diag}"
+if grep -q "^CONFIG_C2S_DIAG=y" "${CONFIG}"; then
+	bad "CONFIG_C2S_DIAG=y in the final .config (display-specific first-instruction code)"
+else
+	ok "CONFIG_C2S_DIAG is not enabled in the final .config"
+fi
+if grep -q "^# CONFIG_C2S_DIAG is not set" "${CONFIG}" \
+   || ! grep -q "CONFIG_C2S_DIAG" "${CONFIG}"; then
+	ok "final .config records CONFIG_C2S_DIAG as not set"
+else
+	bad "final .config does not record CONFIG_C2S_DIAG as not set"
+fi
+# Binary gate: the diagnostic M1/M2 code materialises exactly these three
+# framebuffer base addresses with the encodings produced by
+#   movz xN, #0xf100, lsl #16  (M1/M2 base 0)
+#   movz xN, #0xf980, lsl #16  (base 1)
+#   movz xN, #0xfac0, lsl #16  (base 2)
+# Scan the Image for every occurrence of those 16-bit immediates inside a
+# 64-bit MOVZ (fixed opcode 0xd2a00000|hw<<21, Rd in the low bits). The
+# bytes are extracted from the instruction word, so this is a precise
+# instruction-level search, not a loose byte grep.
+PY_DIAG=$(python3 - "${IMAGE}" <<'PYEOF'
+import struct, sys
+
+data = open(sys.argv[1], "rb").read()
+hits = {0xf100: [], 0xf980: [], 0xfac0: []}
+for off in range(0, len(data) - 3, 4):
+    w = struct.unpack_from("<I", data, off)[0]
+    # MOVZ Xd, #imm16, LSL #16 : sf=1 opc=10 100101 hw=01
+    if (w & 0xFFE00000) != 0xD2A00000:
+        continue
+    imm = (w >> 5) & 0xFFFF
+    if imm in hits:
+        hits[imm].append(off)
+total = sum(len(v) for v in hits.values())
+if total:
+    for imm, offs in hits.items():
+        if offs:
+            print("HIT imm=0x%04x count=%d first=0x%x" %
+                  (imm, len(offs), offs[0]))
+    sys.exit(1)
+print("no M1/M2 framebuffer MOVZ immediates in the Image")
+sys.exit(0)
+PYEOF
+)
+if [ -n "${PY_DIAG}" ] && [ "${PY_DIAG#HIT}" != "${PY_DIAG}" ]; then
+	bad "Image carries diagnostic framebuffer immediates: ${PY_DIAG}"
+else
+	ok "Image contains no diagnostic framebuffer MOVZ immediates (0xf100/0xf980/0xfac0)"
+fi
+# Positive control: the SAME scan must flag the preserved diagnostic
+# reference Image (the earlier CONFIG_C2S_DIAG=y build), otherwise the
+# scan above proves nothing.
+if [ -s "${DIAG_REF_IMG}" ]; then
+	if python3 - "${DIAG_REF_IMG}" <<'PYEOF' > /dev/null 2>&1
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+for off in range(0, len(data) - 3, 4):
+    w = struct.unpack_from("<I", data, off)[0]
+    if (w & 0xFFE00000) == 0xD2A00000 and ((w >> 5) & 0xFFFF) in (0xf100, 0xf980, 0xfac0):
+        sys.exit(0)
+sys.exit(1)
+PYEOF
+	then
+		ok "positive control: the diagnostic reference Image DOES contain those immediates (scan is sensitive)"
+	else
+		bad "positive control failed: diagnostic reference Image not flagged by the scan"
+	fi
+else
+	note "no diagnostic reference Image at ${DIAG_REF_IMG} (set C2S_DIAG_REF_IMAGE); sensitivity control skipped"
+fi
+# Disassembly gate: primary_entry must open like the stock entry (no
+# framebuffer store loop). We disassemble the built vmlinux's
+# primary_entry and require that the first instructions contain neither
+# a MOVZ with those immediates nor an STP into a register loaded from
+# them (the M1 pattern starts with mov x4,#0xffff / movk x4,#0xffff,lsl#16
+# which is unique to the diagnostic prologue).
+VBUILD="${KBUILD}/vmlinux"
+if [ -x "${VBUILD}" ] || [ -s "${VBUILD}" ]; then
+	DISASM=$(aarch64-linux-gnu-objdump -d \
+		--disassemble=primary_entry "${VBUILD}" 2> /dev/null | head -n 40)
+	if [ -n "${DISASM}" ]; then
+		if printf '%s\n' "${DISASM}" \
+			| grep -qE "0xf1000000|0xf9800000|0xfac00000|#0xf100|#0xf980|#0xfac0"; then
+			bad "primary_entry disassembly still references the diagnostic framebuffer addresses"
+		else
+			ok "primary_entry disassembly has no framebuffer addresses (M1/M2 code absent)"
+		fi
+		if printf '%s\n' "${DISASM}" | grep -qE "mov\s+x4, #0xffff"; then
+			bad "primary_entry starts with the diagnostic white-band prologue (mov x4,#0xffff)"
+		else
+			ok "primary_entry starts without the diagnostic prologue"
+		fi
+	else
+		note "objdump could not disassemble primary_entry; binary gate above still applies"
+	fi
+else
+	note "vmlinux not present in ${KBUILD}; disassembly gate skipped"
+fi
+
 # ------------------------------------------------- console font (issue #4)
 # 1440x3088 framebuffer: the 16x32 Terminus font gives 90x96 characters.
 # CONFIG_CMDLINE_FORCE=y means fbcon gets its options ONLY through
@@ -333,8 +441,10 @@ fi
 # gserial_alloc_line(), port 0) is what register_console()s ttyGS, and
 # init messages must go through /dev/kmsg so they fan out to it.
 section "USB serial console init ordering and logging"
-ACM_MK=$(grep -n 'functions/acm' "${INIT}" | head -n1 | cut -d: -f1)
-NCM_MK=$(grep -n 'functions/ncm' "${INIT}" | head -n1 | cut -d: -f1)
+GADGET_LIB="${UNPACK}/usr/lib/c2s-gadget.sh"
+INIT="${UNPACK}/init"
+ACM_MK=$(grep -n 'functions/acm' "${GADGET_LIB:-/dev/null}" 2> /dev/null | head -n1 | cut -d: -f1)
+NCM_MK=$(grep -n 'functions/ncm' "${GADGET_LIB:-/dev/null}" 2> /dev/null | head -n1 | cut -d: -f1)
 if [ -n "${ACM_MK}" ] && [ -n "${NCM_MK}" ] && [ "${ACM_MK}" -lt "${NCM_MK}" ]; then
 	ok "init: ACM function instance created before NCM/RNDIS"
 else
@@ -342,14 +452,21 @@ else
 fi
 # the console configfs attribute only exists with CONFIG_U_SERIAL_CONSOLE
 # and must not abort gadget setup when it is missing
-grep -q 'acm.usb2/console' "${INIT}" \
+grep -q 'acm.usb2/console' "${GADGET_LIB:-/dev/null}" \
 	&& ok "init: ACM console attribute written" \
 	|| bad "init: ACM console attribute not written"
-if grep -Eq '2>/dev/null \|\| true' "${INIT}"; then
+if grep -Eq '2> ?/dev/null \|\| true' "${GADGET_LIB:-/dev/null}"; then
 	ok "init: console attribute write is non-fatal"
 else
 	bad "init: console attribute write may abort gadget setup"
 fi
+# init must source the shared state machine (the same file the host
+# fault-injection harness tests), and it must ship in the archive
+grep -q 'c2s-gadget.sh' "${INIT}" \
+	&& ok "init: sources /usr/lib/c2s-gadget.sh" \
+	|| bad "init does not source /usr/lib/c2s-gadget.sh"
+check "shipped archive: /usr/lib/c2s-gadget.sh present" \
+	test -s "${GADGET_LIB:-/dev/null}"
 # init's own output must be routed through the kernel log, otherwise it
 # only reaches /dev/console (framebuffer) and never the ttyGS console
 grep -q 'dev/kmsg' "${INIT}" \
@@ -359,6 +476,46 @@ grep -q 'dev/kmsg' "${INIT}" \
 grep -q 'start_dropbear' "${INIT}" \
 	&& ok "init: dropbear start logic present" \
 	|| bad "init: dropbear start logic missing"
+
+# -------------------------------------------- ACM independent fallback
+# One UDC, one gadget: the requirement is not a second UDC, it is that
+# an NCM/RNDIS setup failure cannot prevent ACM from being linked and
+# bound. Gates here check the state machine's structure; the behavioural
+# proof runs in the fault-injection section below.
+section "ACM independent fallback (state machine structure)"
+if grep -q 'ncm-skipped' "${GADGET_LIB:-/dev/null}" \
+   && grep -q 'rndis-skipped' "${GADGET_LIB:-/dev/null}"; then
+	ok "state machine: NCM and RNDIS failures are non-fatal (skipped stages)"
+else
+	bad "state machine: missing non-fatal NCM/RNDIS failure handling"
+fi
+if grep -q 'bound-acm-fallback' "${GADGET_LIB:-/dev/null}"; then
+	ok "state machine: ACM-only bind fallback after a failed full bind"
+else
+	bad "state machine: no ACM-only bind fallback"
+fi
+if grep -q 'udc-absent' "${GADGET_LIB:-/dev/null}"; then
+	ok "state machine: absent UDC is a distinct stage (status 2)"
+else
+	bad "state machine: absent UDC not distinguished from bind failure"
+fi
+# the machine must never pretend there is more than one UDC
+# the machine must never pretend there is more than one UDC: there must
+# be exactly ONE bind site (the gadget's single UDC attribute) and no
+# loop over several UDCs.
+UDC_REFS=$(grep -c 'C2S_UDC_DIR' "${GADGET_LIB:-/dev/null}" 2> /dev/null || echo 0)
+UDC_BINDS=$(grep -c '> "${_cfg}/UDC"' "${GADGET_LIB:-/dev/null}" 2> /dev/null || echo 0)
+if [ "${UDC_REFS}" -ge 1 ] && [ "${UDC_BINDS}" -eq 1 ] \
+   && ! grep -Eq 'for .*udc|while .*udc' "${GADGET_LIB:-/dev/null}"; then
+	ok "state machine: exactly one UDC bind site (single UDC, no multi-UDC loop)"
+else
+	bad "state machine: UDC refs=${UDC_REFS} binds=${UDC_BINDS}; want one bind site on one UDC"
+fi
+if grep -q 'dropbear NOT started (console-only stage)' "${INIT}"; then
+	ok "init: SSH is not started when no network interface exists"
+else
+	bad "init: console-only stage still risks starting dropbear"
+fi
 
 # ------------------------------------------------- boot menu functional
 # Exercise the shipped rescue-menu (wrapper) and rescue-menu-keys (input
@@ -684,6 +841,48 @@ PYEOF
 	[ -x "${AVBTOOL_BIN}" ] || AVBTOOL_BIN=avbtool
 	check "avbtool verifies the packaged boot.img" \
 		"${AVBTOOL_BIN}" verify_image --image "${OUTDIR}/boot.img"
+	# AVB form gate: structure verification alone does NOT mean the
+	# image is signed. info_image tells us the algorithm; only
+	# SHA256_RSA4096 + a signature check against the authorized host key
+	# makes the footer meaningful to verified boot. An unsigned (NONE)
+	# footer is structure-and-hash only and must be labelled as such.
+	section "AVB form (signed vs structure-only)"
+	AVBINFO=$(mktemp)
+	if "${AVBTOOL_BIN}" info_image --image "${OUTDIR}/boot.img" \
+		> "${AVBINFO}" 2> /dev/null; then
+		AVB_ALG=$(sed -n 's/^Algorithm:[[:space:]]*//p' "${AVBINFO}" | tr -d ' ')
+		AVB_ROLL=$(sed -n 's/^Rollback Index:[[:space:]]*//p' "${AVBINFO}" | head -n1 | tr -d ' ')
+		case "${AVB_ALG}" in
+		SHA256_RSA4096)
+			ok "boot.img footer algorithm: SHA256_RSA4096 (signed form)"
+			if [ "${AVB_ROLL}" = "13" ]; then
+				ok "boot.img rollback index 13 (matches the installed vbmeta)"
+			else
+				bad "boot.img rollback index ${AVB_ROLL} != 13"
+			fi
+			if [ -n "${C2S_AVB_KEY:-}" ] && [ -f "${C2S_AVB_KEY}" ]; then
+				if "${AVBTOOL_BIN}" verify_image \
+					--image "${OUTDIR}/boot.img" \
+					--key "${C2S_AVB_KEY}" > /dev/null 2>&1; then
+					ok "signature verified against the authorized host key (embedded key matches C2S_AVB_KEY)"
+				else
+					bad "verify_image --key failed: footer not signed by the authorized key"
+				fi
+			else
+				note "C2S_AVB_KEY not in the environment: embedded-key comparison skipped"
+			fi
+			;;
+		NONE)
+			bad "boot.img footer algorithm NONE (unsigned): structure and hash only, NOT verified-boot compatible"
+			;;
+		*)
+			bad "unexpected boot.img footer algorithm: ${AVB_ALG:-<none>}"
+			;;
+		esac
+	else
+		bad "avbtool info_image failed on the packaged boot.img"
+	fi
+	rm -f "${AVBINFO}"
 else
 	note "no packaged boot.img in ${OUTDIR}; DT-table checks skipped"
 fi
@@ -867,6 +1066,37 @@ if aarch64-linux-gnu-readelf -d "${UNPACK}/usr/sbin/dropbear" 2>/dev/null \
 else
 	ok "dropbear has no dynamic dependencies"
 fi
+
+# ------------------------------------------------- host capture helper
+section "USB serial console capture helper (host)"
+check "capture-usb-console.sh is executable and parses" \
+	bash -c 'test -x "${0}" && bash -n "${0}"' "${SCRIPT_DIR}/capture-usb-console.sh"
+if grep -q 'GS_CONSOLE_BUF_SIZE = 8192' "${SCRIPT_DIR}/capture-usb-console.sh" \
+   && grep -q 'CON_PRINTBUFFER' "${SCRIPT_DIR}/capture-usb-console.sh"; then
+	ok "capture helper documents the 8 KiB console buffer limit and the ring-buffer replay"
+else
+	bad "capture helper does not document the console buffer limit / ring-buffer replay"
+fi
+
+# ------------------------------------- USB state-machine fault injection
+# Runs the shipped /usr/lib/c2s-gadget.sh through the four controlled
+# cases (NCM fail, RNDIS fail, absent UDC, all-success) plus the
+# bind-failure fallback case on a fake configfs/UDC tree.
+section "USB state machine fault injection (host, fake configfs)"
+FI_OUT=$(bash "${SCRIPT_DIR}/fault-injection.sh" "${OUTDIR}" 2>&1)
+FI_RC=$?
+printf '%s\n' "${FI_OUT}" | sed -n 's/^\(PASS\|FAIL\):/\1:/p' > "${OUTDIR}/fault-injection.log"
+FI_PASS=$(printf '%s\n' "${FI_OUT}" | grep -c '^PASS:')
+FI_FAIL=$(printf '%s\n' "${FI_OUT}" | grep -c '^FAIL:')
+printf '%s\n' "${FI_OUT}" | grep '^FAIL:' | while read -r l; do bad "fault-injection: ${l#FAIL: }"; done
+if [ "${FI_RC}" -eq 0 ] && [ "${FI_FAIL}" -eq 0 ] && [ "${FI_PASS}" -ge 10 ]; then
+	ok "fault-injection: ${FI_PASS} checks passed, 0 failed (see ${OUTDIR}/fault-injection.log)"
+else
+	bad "fault-injection: rc=${FI_RC} pass=${FI_PASS} fail=${FI_FAIL}"
+fi
+printf '%s\n' "${FI_OUT}" | grep -q 'cannot be observed' \
+	&& ok "fault-injection: limitations of host evidence are stated in its output" \
+	|| bad "fault-injection: does not state which stages cannot be observed on a host"
 
 # ------------------------------------------- host-run functional smoke test
 section "functional smoke test (host-run dropbear, key-only)"

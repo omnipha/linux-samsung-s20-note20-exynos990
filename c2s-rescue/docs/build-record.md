@@ -436,3 +436,157 @@ key-only dropbear path. The pre-existing gates (boot-image DT table,
 `avbtool verify_image`, DTB sanity, stock DTBO overlay compatibility,
 initramfs cpio/applet regression, telnet gate, host-run dropbear
 key-only smoke test) still pass unchanged.
+
+## Issue #4 corrections (coordinator verification): minimal USB baseline,
+## independent ACM enumeration, signed AVB
+
+The coordinator's review of candidate `69702078…` found three defects.
+This section records the corrected build; the previous sections are kept
+unchanged as the record of the earlier candidate.
+
+### 1. `CONFIG_C2S_DIAG` disabled for the minimal USB baseline
+
+`arch/arm64/configs/c2s_rescue_defconfig` no longer sets
+`CONFIG_C2S_DIAG=y`. The diagnostic candidate wrote milestone markers as
+plain stores into three framebuffer addresses (0xf1000000, 0xf9800000,
+0xfac00000) from the very first instructions of `primary_entry`
+(`arch/arm64/kernel/head.S`, M1) and again with the MMU on (M2), plus
+extra initial ID-map coverage (`arch/arm64/pi/map_range.c`,
+`arch/arm64/include/asm/kernel-pgtable.h`). That is display-specific
+code in the kernel's entry path and does not belong in a minimal USB
+observation baseline.
+
+Preservation, not deletion:
+
+* the implementation in `head.S`, `map_range.c`, `kernel-pgtable.h` and
+  the `C2S_DIAG` Kconfig symbol are untouched;
+* `arch/arm64/configs/c2s_rescue_diag_defconfig` is a new (copy of the
+  old) defconfig with `CONFIG_C2S_DIAG=y`, so the earlier diagnostic
+  build stays reproducible with
+  `make ARCH=arm64 c2s_rescue_diag_defconfig`.
+
+Proof is taken from the *final artifacts*, not the sources:
+
+* `.config` of the built kernel: `CONFIG_C2S_DIAG` not set;
+* Image scan (instruction level): no `movz` with the M1/M2 framebuffer
+  immediates 0xf100/0xf980/0xfac0 (opcode 0xd2a00000|hw). The same scan
+  run against the preserved diagnostic reference Image
+  (`/tmp/opencode/c2s-diag-ref/Image.diag`, override with
+  `C2S_DIAG_REF_IMAGE`) DOES find them - a positive control so the
+  negative result is meaningful;
+* `primary_entry` disassembly: no framebuffer addresses, no
+  `mov x4, #0xffff` diagnostic prologue.
+
+Result: `Image` shrank 11,891,200 -> 11,760,128 bytes.
+
+### 2. ACM enumerates independently of NCM/RNDIS (state machine + fault injection)
+
+The previous `/init` created ACM, NCM and RNDIS and only bound the UDC
+after *all* of them were linked, so an NCM/RNDIS failure (mkdir, ifname,
+ln) aborted setup and the ACM console never enumerated.
+
+The gadget setup now lives in `/usr/lib/c2s-gadget.sh`, sourced by
+`/init` and tested as-is by `c2s-rescue/scripts/fault-injection.sh`:
+
+* ACM is mandatory: instance created, console attribute written, linked
+  first; a failure there is fatal and reported as such;
+* NCM and RNDIS are optional: each is attempted independently; a failure
+  only drops that link (`ncm-skipped` / `rndis-skipped`) and never
+  unlinks ACM;
+* bind order: full link set first; if the full bind fails, the network
+  symlinks are removed and the ACM-only bind is retried on the SAME UDC
+  (`bound-acm-fallback`);
+* there is exactly one UDC (`10e00000.dwc3` on this device): one
+  gadget, one bind site, no claim of simultaneous or independent UDCs;
+* stage/status reporting distinguishes "stage reached" from "no USB":
+  status 0 bound, 1 setup failed before bind, 2 no UDC present, 3 every
+  bind failed - statuses 2 and 3 mean NOTHING enumerated on USB.
+
+`/init` only configures addresses for netdevs that actually exist, and
+never starts dropbear when no USB network interface exists (console-only
+stage).
+
+Host fault injection (`verify.sh` section "USB state machine fault
+injection") runs the shipped `c2s-gadget.sh` against a fake
+configfs/UDC tree:
+
+| Case | Injected fault | Result | Proves | Does NOT prove |
+|---|---|---|---|---|
+| 1 NCM failure | `functions/ncm.usb0` creation fails | status 0, stage `bound`, linked `[acm.usb2 rndis.usb1]` | ACM survives an NCM failure and stays bound; NCM genuinely absent | that USB enumerates on hardware |
+| 2 RNDIS failure | `functions/rndis.usb1` creation fails | status 0, stage `bound`, linked `[acm.usb2 ncm.usb0]` | ACM survives a RNDIS failure | that a host sees the device |
+| 3 absent UDC | empty UDC class dir | status 2, stage `udc-absent`, ACM still linked | "no UDC" is distinguishable from a broken bind; nothing enumerated is reported explicitly | anything about USB electrical behaviour |
+| 4 all-success | none | status 0, stage `bound`, linked `[acm.usb2 ncm.usb0 rndis.usb1]`, report == tree | full path works; single UDC bind site | that the real configfs/UDC accepts the bind |
+| 5 unbindable UDC | `UDC` attribute read-only | full bind fails, ACM-only fallback attempted, status 3 `bind-failed-all` | fallback sequence runs; failure is reported as "NOTHING enumerated" | that a real dwc3 bind can fail this way (kernel semantics not modelled) |
+
+The fake tree models the *sequence*, not kernel configfs semantics
+(no EBUSY, no `udc_name` locking, no netdev registration). These tests
+are necessary evidence for the fallback logic, not proof of device
+behaviour - hardware evidence remains with the coordinator.
+
+Host-side console capture for the hardware run:
+`c2s-rescue/scripts/capture-usb-console.sh [outfile] [device]` opens the
+CDC-ACM device in raw mode and timestamps every line; it documents that
+the ttyGS console buffer is 8 KiB (`GS_CONSOLE_BUF_SIZE`, overflow is
+dropped) and that `CON_PRINTBUFFER` replays the ring buffer at console
+registration, while `dmesg` over SSH is the complete buffer.
+
+### 3. AVB: signed form required, unsigned result labelled
+
+Candidate `6970207865d6cbb3…` was packaged **without** `C2S_AVB_KEY`, so
+its footer is `Algorithm: NONE`: avbtool proved structure and hash only,
+no cryptographic signature, not compatible with any verified-boot
+policy. That artifact is labelled as structure-and-hash only and is
+superseded.
+
+`package-bootimg.sh` now:
+
+* fails unless `C2S_AVB_KEY` is given (or `C2S_ALLOW_UNSIGNED=1` is
+  explicitly set for an inspection-only build, clearly labelled);
+* adds `--algorithm SHA256_RSA4096 --key $C2S_AVB_KEY
+  --rollback_index 13`;
+* runs `avbtool info_image`, requires `Algorithm: SHA256_RSA4096` and
+  rollback index 13, and runs
+  `avbtool verify_image --key $C2S_AVB_KEY` so the embedded public key
+  is checked against the authorized host key, not merely present.
+
+The host key stays off the repository (`C2S_AVB_KEY` path only; the
+verify gate reads it from the environment).
+
+### Artifacts of this build (build host, `/tmp/opencode/c2s-out`)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `Image` | 11,760,128 B | `5489149e0d59eb302c9d8a26533b2414666d8f177f1967aa2f6a03ad76ccfdd2` |
+| `exynos990-c2s.dtb` | 141,740 B | `6afe6322273ffed7207eb14235d2ad7d9c4de2ba63f86bf8f97fc75ffcc799f6` |
+| `initramfs.cpio.gz` | 2,496,563 B | `80e84e4e9a5ccd11bc3abeef044f5dbae77ea035943cca11ac7d52669edafcbd` |
+| `boot.img` | 61,865,984 B | `4b823391eea9e14014eee5129e68f847be6e5b38e85d91b963f041518e34e5e7` |
+
+DTB byte-identical to the previous candidate (`6afe6322…`): the device
+tree was not touched.
+
+AVB (`avbtool info_image` / `verify_image`):
+
+* `Algorithm: SHA256_RSA4096`, `Rollback Index: 13`,
+  `Public key (sha1): fcbc02ced423008be3a706f4e85a7366e9b4db6f`
+  (same key as the installed vbmeta recorded in `evidence.md`);
+* `verify_image` with `--key $C2S_AVB_KEY` passes: signature and
+  embedded public key verified;
+* the DT slot still parses as the Samsung DT table (magic 0xd7b7ab1e,
+  FDT == kbuild DTB).
+
+What this does NOT prove: nothing about device acceptance. Host AVB
+verification proves the artifact's internal cryptographic consistency
+and its compatibility with the recorded verified-boot policy (algorithm
+and rollback index); whether the device accepts the image is a hardware
+question for the coordinator (locked vs unlocked chain, rollback
+enforcement).
+
+### Verification
+
+`c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-out` -> **170 passed,
+0 failed** (150 before, +20 new gates: minimal-baseline
+`CONFIG_C2S_DIAG` gates with positive control, `primary_entry`
+disassembly, ACM-fallback state machine structure, single-UDC bind
+site, console-only SSH gate, shipped `c2s-gadget.sh`, fault-injection
+run + its stated limitations, AVB algorithm/signature gates, capture
+helper documentation).

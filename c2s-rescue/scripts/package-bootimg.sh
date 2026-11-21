@@ -159,23 +159,46 @@ mkbootimg \
 echo "== adding AVB hash footer"
 # The footer is added with the host key that signed the installed
 # vbmeta (rollback index 13). Without it sboot refuses the image.
-if [ -n "${C2S_AVB_KEY:-}" ] && [ -f "${C2S_AVB_KEY}" ]; then
+#
+# Signing policy (issue #4):
+#   - the deliverable MUST carry an RSA-signed footer
+#     (--algorithm SHA256_RSA4096 --key $C2S_AVB_KEY). An unsigned
+#     footer (--algorithm NONE) is structure-and-hash only: avbtool
+#     verify_image then proves nothing beyond layout and digest, and no
+#     verified-boot policy can accept it. Candidate
+#     6970207865d6cbb3... (boot.img built without C2S_AVB_KEY) is
+#     exactly such an unsigned artifact and is labelled as such in the
+#     docs - it is NOT an authenticatable image.
+#   - therefore packaging fails outright unless C2S_AVB_KEY is given,
+#     unless the caller explicitly opts in to an unsigned build with
+#     C2S_ALLOW_UNSIGNED=1 (inspection only).
+if [ -z "${C2S_AVB_KEY:-}" ] || [ ! -f "${C2S_AVB_KEY:-}" ]; then
+	if [ "${C2S_ALLOW_UNSIGNED:-0}" = "1" ]; then
+		echo "NOTE: C2S_ALLOW_UNSIGNED=1 and no C2S_AVB_KEY:" \
+		     "adding an unsigned (algorithm NONE) footer."
+		echo "      Structure-and-hash only - NOT signed, NOT accepted" \
+		     "by verified boot, inspection use only."
+		"${AVBTOOL}" add_hash_footer \
+			--image "${OUTDIR}/boot-unsigned.img" \
+			--partition_size "${PARTITION_SIZE}" \
+			--partition_name boot \
+			--algorithm NONE \
+			--rollback_index "${ROLLBACK_INDEX}"
+	else
+		echo "ERROR: C2S_AVB_KEY is not set (or the file is missing)." >&2
+		echo "       The deliverable must be RSA-signed (SHA256_RSA4096);" >&2
+		echo "       an unsigned footer only proves structure and hash." >&2
+		echo "       Set C2S_AVB_KEY=/path/to/avb_key.pem, or set" >&2
+		echo "       C2S_ALLOW_UNSIGNED=1 for an inspection-only build." >&2
+		exit 1
+	fi
+else
 	"${AVBTOOL}" add_hash_footer \
 		--image "${OUTDIR}/boot-unsigned.img" \
 		--partition_size "${PARTITION_SIZE}" \
 		--partition_name boot \
 		--algorithm SHA256_RSA4096 \
 		--key "${C2S_AVB_KEY}" \
-		--rollback_index "${ROLLBACK_INDEX}"
-else
-	echo "NOTE: no C2S_AVB_KEY given; adding an unsigned (algorithm NONE)"
-	echo "      footer. The result will NOT boot on a device with AVB"
-	echo "      enabled - it is only useful for format inspection."
-	"${AVBTOOL}" add_hash_footer \
-		--image "${OUTDIR}/boot-unsigned.img" \
-		--partition_size "${PARTITION_SIZE}" \
-		--partition_name boot \
-		--algorithm NONE \
 		--rollback_index "${ROLLBACK_INDEX}"
 fi
 
@@ -186,6 +209,35 @@ mv -f "${OUTDIR}/boot-unsigned.img" "${OUT}"
 
 echo "== verifying"
 "${AVBTOOL}" verify_image --image "${OUT}"
+
+echo "== AVB form (info_image)"
+"${AVBTOOL}" info_image --image "${OUT}" | tee "${OUTDIR}/bootimg-avb-info.txt"
+
+AVB_ALG=$(sed -n 's/^Algorithm:[[:space:]]*//p' "${OUTDIR}/bootimg-avb-info.txt" | tr -d ' ')
+AVB_ROLLBACK=$(sed -n 's/^Rollback Index:[[:space:]]*//p' "${OUTDIR}/bootimg-avb-info.txt" | head -n1 | tr -d ' ')
+if [ "${AVB_ALG}" = "SHA256_RSA4096" ]; then
+	if [ -n "${C2S_AVB_KEY:-}" ] && [ -f "${C2S_AVB_KEY}" ]; then
+		# Prove the footer is not just present but actually signed by
+		# the authorized host key: verify_image re-computes the RSA
+		# signature over the vbmeta block and additionally checks the
+		# embedded public key against C2S_AVB_KEY.
+		"${AVBTOOL}" verify_image --image "${OUT}" --key "${C2S_AVB_KEY}"
+		echo "avb: Algorithm SHA256_RSA4096, signature verified against C2S_AVB_KEY"
+	else
+		echo "ERROR: footer says SHA256_RSA4096 but no C2S_AVB_KEY to verify against" >&2
+		exit 1
+	fi
+elif [ "${AVB_ALG}" = "NONE" ]; then
+	echo "avb: unsigned footer (Algorithm NONE) - structure and hash only;" \
+	     "not signed, not verified-boot compatible (inspection build)"
+else
+	echo "ERROR: unexpected AVB algorithm: ${AVB_ALG}" >&2
+	exit 1
+fi
+if [ "${AVB_ROLLBACK}" != "${ROLLBACK_INDEX}" ]; then
+	echo "ERROR: rollback index ${AVB_ROLLBACK} != ${ROLLBACK_INDEX}" >&2
+	exit 1
+fi
 
 # Independent DT-table sanity check: parse the dt slot of the finished
 # image at the exact offset sboot computes (payload_base + aligned
@@ -244,6 +296,9 @@ PYEOF
 	echo "  name:    ${BOOT_NAME}"
 	echo "  os:      ${OS_VERSION} / patch ${OS_PATCH_LEVEL}"
 	echo "  rollback: ${ROLLBACK_INDEX}"
+	echo "  avb:     algorithm ${AVB_ALG} (signed = RSA signature over the" \
+		"vbmeta block, verified against the authorized host key;" \
+		"NONE = structure and hash only, unsigned)"
 	echo "  dt slot: Samsung DT table (magic 0xd7b7ab1e), 1 entry," \
 		"custom [0,0xff,0,0], FDT at +0x40; wrapper + packed image" \
 		"verified"

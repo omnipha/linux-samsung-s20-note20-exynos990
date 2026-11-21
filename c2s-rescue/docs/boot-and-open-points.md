@@ -71,6 +71,18 @@ initramfs                 -> boot image ramdisk slot
 boot.img                  -> partition-sized, AVB hash footer
 ```
 
+AVB form of the current candidate (see `build-record.md`): the footer is
+`Algorithm: SHA256_RSA4096`, rollback index 13, signed with the
+authorized host key (`C2S_AVB_KEY`, never part of the repository) and
+verified on the build host with
+`avbtool verify_image --image boot.img --key $C2S_AVB_KEY`. The earlier
+candidate `69702078…` had `Algorithm: NONE` - structure and hash only,
+no signature - and is superseded. Host AVB verification proves the
+image's cryptographic self-consistency and its match to the recorded
+policy; it does **not** prove the device accepts the image (hardware
+test, coordinator).
+```
+
 **No boot or flash attempt was made as part of this issue.** This is
 deliberate: device I/O (ADB fastboot, Heimdall, flashing, rebooting)
 belongs to the coordinator. A boot attempt therefore requires a
@@ -80,19 +92,43 @@ recovery path (download mode / Odin).
 ## Rescue system behaviour at boot
 
 1. `/init` mounts proc, sysfs, devtmpfs, devpts, configfs, tmpfs.
-2. It creates the configfs gadget `c2s` with three functions -
-   `ncm.usb0`, `rndis.usb1`, `acm.usb2` - each pinned to a fixed
-   interface name (`ncm%d`, `rndis%d`) so host-side naming is
-   predictable, then binds it to the DWC3 UDC (`10e00000.dwc3`).
-3. Static addresses (both up simultaneously):
+2. It creates the configfs gadget `c2s` (state machine in
+   `/usr/lib/c2s-gadget.sh`): the ACM function `acm.usb2` first and
+   mandatory (its creation registers the `ttyGS` console), then the
+   optional network functions `ncm.usb0` / `rndis.usb1` (each pinned to
+   a fixed interface name, `ncm%d` / `rndis%d`, so host-side naming is
+   predictable). A network function that cannot be set up is skipped
+   only - it never removes ACM. The gadget is then bound to the single
+   DWC3 UDC (`10e00000.dwc3`); if the full bind fails, the network
+   functions are dropped and an ACM-only bind is retried on the same
+   UDC. There is exactly one UDC and one gadget - ACM is *not* a second
+   independent UDC, it is an independent *function* that enumerates
+   within the same device.
+
+   Stage reporting (kernel log, also on the USB console):
+
+   | Status | Stage | Meaning |
+   |---|---|---|
+   | 0 | `bound` / `bound-acm-fallback` | gadget bound; USB enumerates (ACM always, network if linked) |
+   | 1 | `acm-instance-fail`, `acm-link-fail`, `cfgfs-fail` | setup failed before bind - nothing enumerated, no console |
+   | 2 | `udc-absent` | no UDC present - nothing enumerated (ACM function exists, waiting for a UDC) |
+   | 3 | `bind-failed-all` | UDC present but every bind attempt failed - nothing enumerated |
+
+   "Stage reached" and "no USB" are therefore distinguishable in the
+   log: statuses 2 and 3 mean no USB device appears at all.
+3. Static addresses (only for interfaces that exist; both up
+   simultaneously when both functions linked):
 
    | Link | Rescue side | Host side |
    |---|---|---|
    | NCM (Linux/macOS) | 192.168.42.1/24 | 192.168.42.2 |
    | RNDIS (Windows) | 192.168.62.1/24 | 192.168.62.2 |
 
-4. If `/root/.ssh/authorized_keys` is non-empty, dropbear starts on
-   `192.168.42.1:22` and `192.168.62.1:22` (pubkey only).
+4. If `/root/.ssh/authorized_keys` is non-empty **and** at least one
+   USB network interface exists, dropbear starts on
+   `192.168.42.1:22` and `192.168.62.1:22` (pubkey only). With no
+   network interface (console-only stage) dropbear is deliberately not
+   started - it would have nothing to bind to.
 5. A shell on the framebuffer console is kept alive and is respawned
    if it dies; dropbear and (if enabled) telnetd are supervised the
    same way.
@@ -186,3 +222,34 @@ These are known and documented rather than solved:
   place so a reviewer can audit the exposure surface at a glance.
 - The initramfs ships no private keys, no device serial and no
   serial-bearing cmdline tokens (enforced by the verify secret scan).
+
+## Hardware test checklist (coordinator; not performed on this host)
+
+Host verification cannot substitute for a device run. To capture what
+the host-side evidence cannot show:
+
+1. Console first, cable only: run
+   `c2s-rescue/scripts/capture-usb-console.sh console.log /dev/ttyACM0`
+   on the host *before* the device is powered so the `CON_PRINTBUFFER`
+   replay of the ring buffer is not missed. Expect (in order): kernel
+   boot log, then init lines with the `c2s-rescue:` prefix, including
+   `gadget stage=0:acm-linked`, `ncm-linked`/`rndis-linked` (or
+   `ncm-skipped`/`rndis-skipped`), `gadget stage=0:bound udc=10e00000.dwc3`.
+   Remember the console buffer is 8 KiB and drops overflow, so a late
+   open loses early lines - `dmesg` over SSH is the full buffer.
+2. Stage vs absence of USB: if the host sees **no** USB device at all,
+   the log must contain `stage=2:udc-absent` or `stage=3:bind-failed-all`
+   (neither enumerates); if it sees a device, status 0 was reached.
+   Without any capture at all, "no USB" is indistinguishable from
+   "did not boot" - that gap can only be closed on the device.
+3. Networking + SSH (only when the network functions linked):
+   host NCM 192.168.42.2, RNDIS 192.168.62.2; then key-only SSH to
+   192.168.42.1 / 192.168.62.1. Confirm telnet is NOT listening (needs
+   config flag + marker + menu selection).
+4. Fallback cases to reproduce on hardware if the coordinator injects
+   faults (e.g. a gadget config with NCM/RNDIS removed): ACM must still
+   enumerate and the console must still stream - that is the claim the
+   host fault-injection tests support but cannot prove.
+5. Close issue #4 only after these device observations; host
+   verification (170 gates + 5 fault cases) is necessary evidence, not
+   sufficient.

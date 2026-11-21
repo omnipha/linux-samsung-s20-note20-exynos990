@@ -2456,8 +2456,10 @@ config C2S_DIAG
 	  enabled, the kernel writes early boot milestone markers as plain
 	  physical stores (MMU off, registers and adrp/adr only) into the
 	  framebuffers so a dying kernel leaves a visible trace on screen.
-	  The symbol is only enabled in c2s_rescue_defconfig; leave it off
-	  for every other build.
+	  The symbol is enabled only in c2s_rescue_diag_defconfig (the
+	  earlier diagnostic build); the minimal USB baseline
+	  c2s_rescue_defconfig leaves it off, so the rescue Image carries no
+	  framebuffer-specific first-instruction code.
 
 menu "Power management options"
 

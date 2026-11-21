@@ -262,3 +262,43 @@ never committed.
 - no device serial, serial-bearing cmdline, or private key material
   was committed, posted, or stored in any artifact (checked by the
   verify secret scan).
+
+## Issue #4 correction round (coordinator review of candidate `69702078…`)
+
+Host-only evidence for the corrected build (no device access, no flash,
+no reboot). The previous candidate is superseded; see
+`build-record.md` for the full record.
+
+* Minimal USB baseline: `CONFIG_C2S_DIAG` is not set in the final
+  `.config`; the built `Image` contains no `movz` with the diagnostic
+  framebuffer immediates 0xf100/0xf980/0xfac0, and `primary_entry`'s
+  disassembly has no framebuffer address and no `mov x4, #0xffff`
+  prologue. Positive control: the same scan flags the preserved
+  diagnostic reference Image. The diagnostic implementation itself is
+  kept in the tree and reproducible via
+  `arch/arm64/configs/c2s_rescue_diag_defconfig`.
+* USB gadget state machine: `/usr/lib/c2s-gadget.sh` (shipped in the
+  initramfs) creates and links ACM first (mandatory), then NCM and RNDIS
+  independently (optional), then binds the single UDC; a failed full
+  bind is retried ACM-only on the same UDC. Host fault injection
+  (fake configfs/UDC) ran the shipped file through five controlled
+  cases: NCM failure, RNDIS failure, absent UDC, all-success,
+  unbindable UDC - 10 checks, 0 failures. The cases prove the fallback
+  *sequence*; they cannot prove USB enumeration, ttyGS delivery, netdev
+  creation or SSH reachability, because no UDC, cable or host
+  controller exists here. The harness prints these limits with its
+  results.
+* AVB: the current `boot.img` footer is `Algorithm: SHA256_RSA4096`,
+  rollback index 13, public key sha1 `fcbc02ced423008be3a706f4e85a7366e9b4db6f`
+  (the key that signed the installed vbmeta, recorded earlier in this
+  file). `avbtool verify_image --image boot.img --key $C2S_AVB_KEY`
+  passes (signature + embedded key). The superseded candidate
+  `6970207865d6cbb3…` had `Algorithm: NONE`: structure and hash only,
+  unsigned, not compatible with verified boot - it is labelled as such
+  and is not a deliverable.
+* Verification: `c2s-rescue/scripts/verify.sh` -> 170 passed, 0 failed
+  (serial run; the dropbear smoke test binds a fixed host port and must
+  not run concurrently).
+* Not proven here: that the device boots this image, that the USB
+  console or SSH is reachable on hardware, and that the device accepts
+  the AVB chain. Those require the coordinator's hardware run.

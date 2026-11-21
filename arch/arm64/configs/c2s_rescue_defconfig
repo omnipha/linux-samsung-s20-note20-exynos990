@@ -89,6 +89,16 @@ CONFIG_USB_CONFIGFS_RNDIS=y
 CONFIG_TMPFS=y
 CONFIG_PRINTK_TIME=y
 
-# Issue #4 diagnostic candidate: early boot milestone markers (M1) written
-# as physical stores into the framebuffers from head.S with the MMU off.
-CONFIG_C2S_DIAG=y
+# Minimal USB baseline: CONFIG_C2S_DIAG is deliberately NOT enabled here.
+# The diagnostic candidate writes milestone markers (M1/MMU-off, M2/MMU-on)
+# as plain stores into three framebuffer addresses from head.S and
+# identity-maps those ranges in the initial ID map (pi/map_range.c,
+# kernel-pgtable.h), i.e. it is display-specific code in the very first
+# instructions of the kernel. The USB-C rescue channel must not carry it.
+# The implementation itself is preserved: arch/arm64/kernel/head.S,
+# arch/arm64/pi/map_range.c, arch/arm64/include/asm/kernel-pgtable.h and
+# the Kconfig symbol are unchanged, and arch/arm64/configs/
+# c2s_rescue_diag_defconfig keeps the earlier diagnostic build reproducible.
+# c2s-rescue/scripts/verify.sh gates this from the final .config AND from
+# the built Image (instruction bytes / disassembly), not from the source.
+# CONFIG_C2S_DIAG is not set
