@@ -133,27 +133,30 @@ else
 	bad "CONFIG_MODULES=y (modules are not part of the rescue design)"
 fi
 
-# ------------------------------------- minimal USB baseline (no C2S_DIAG)
-# The minimal USB baseline must not carry the diagnostic framebuffer
-# code (first-instruction stores into 0xf1000000/0xf9800000/0xfac00000
-# from head.S plus the extra initial ID-map coverage). The gate runs on
-# the FINAL .config and on the FINAL Image bytes/disassembly - not on
-# the sources - so a stray CONFIG_C2S_DIAG=y (or code that escaped the
-# ifdef) cannot pass.
-section "minimal USB baseline (CONFIG_C2S_DIAG off)"
+# ------------------------------------- C2S_DIAG build-mode gate
+# The diagnostic framebuffer code (first-instruction stores into
+# 0xf1000000/0xf9800000/0xfac00000 from head.S plus the extra initial
+# ID-map coverage) must be PRESENT exactly when CONFIG_C2S_DIAG is enabled
+# in the final .config and ABSENT otherwise. The gate runs on the FINAL
+# .config and on the FINAL Image bytes/disassembly - not on the sources -
+# so code that escaped the ifdef, or a defconfig that silently lost the
+# markers, cannot pass.
+#
+# Both build flavours are legitimate deliverables:
+#   c2s_rescue_defconfig        minimal USB baseline     (C2S_DIAG off)
+#   c2s_rescue_diag_defconfig   diagnostic M1/M2 bands   (C2S_DIAG=y)
+# The mode is derived from the produced .config, not from an env hint, so
+# the check cannot be talked into the wrong expectations.
+section "C2S_DIAG build mode (config vs Image)"
 DIAG_REF_IMG="${C2S_DIAG_REF_IMAGE:-/tmp/opencode/c2s-diag-ref/Image.diag}"
 if grep -q "^CONFIG_C2S_DIAG=y" "${CONFIG}"; then
-	bad "CONFIG_C2S_DIAG=y in the final .config (display-specific first-instruction code)"
+	DIAG_MODE=on
+	ok "final .config has CONFIG_C2S_DIAG=y (diagnostic M1/M2 build)"
 else
-	ok "CONFIG_C2S_DIAG is not enabled in the final .config"
+	DIAG_MODE=off
+	ok "final .config has CONFIG_C2S_DIAG off (minimal USB baseline)"
 fi
-if grep -q "^# CONFIG_C2S_DIAG is not set" "${CONFIG}" \
-   || ! grep -q "CONFIG_C2S_DIAG" "${CONFIG}"; then
-	ok "final .config records CONFIG_C2S_DIAG as not set"
-else
-	bad "final .config does not record CONFIG_C2S_DIAG as not set"
-fi
-# Binary gate: the diagnostic M1/M2 code materialises exactly these three
+# Binary check: the diagnostic M1/M2 code materialises exactly these three
 # framebuffer base addresses with the encodings produced by
 #   movz xN, #0xf100, lsl #16  (M1/M2 base 0)
 #   movz xN, #0xf980, lsl #16  (base 1)
@@ -186,8 +189,16 @@ print("no M1/M2 framebuffer MOVZ immediates in the Image")
 sys.exit(0)
 PYEOF
 )
+IMG_HAS_DIAG=off
 if [ -n "${PY_DIAG}" ] && [ "${PY_DIAG#HIT}" != "${PY_DIAG}" ]; then
-	bad "Image carries diagnostic framebuffer immediates: ${PY_DIAG}"
+	IMG_HAS_DIAG=on
+fi
+if [ "${DIAG_MODE}" = on ] && [ "${IMG_HAS_DIAG}" = on ]; then
+	ok "Image DOES carry the M1/M2 framebuffer MOVZ immediates (markers compiled in): ${PY_DIAG}"
+elif [ "${DIAG_MODE}" = on ]; then
+	bad "CONFIG_C2S_DIAG=y but the Image carries no diagnostic framebuffer immediates (M1/M2 lost?)"
+elif [ "${IMG_HAS_DIAG}" = on ]; then
+	bad "CONFIG_C2S_DIAG off but the Image carries diagnostic framebuffer immediates: ${PY_DIAG}"
 else
 	ok "Image contains no diagnostic framebuffer MOVZ immediates (0xf100/0xf980/0xfac0)"
 fi
@@ -212,12 +223,8 @@ PYEOF
 else
 	note "no diagnostic reference Image at ${DIAG_REF_IMG} (set C2S_DIAG_REF_IMAGE); sensitivity control skipped"
 fi
-# Disassembly gate: primary_entry must open like the stock entry (no
-# framebuffer store loop). We disassemble the built vmlinux's
-# primary_entry and require that the first instructions contain neither
-# a MOVZ with those immediates nor an STP into a register loaded from
-# them (the M1 pattern starts with mov x4,#0xffff / movk x4,#0xffff,lsl#16
-# which is unique to the diagnostic prologue).
+# Disassembly gate: primary_entry must open with the diagnostic prologue
+# exactly in the diagnostic build, and must NOT in the baseline.
 VBUILD="${KBUILD}/vmlinux"
 if [ -x "${VBUILD}" ] || [ -s "${VBUILD}" ]; then
 	DISASM=$(aarch64-linux-gnu-objdump -d \
@@ -225,20 +232,40 @@ if [ -x "${VBUILD}" ] || [ -s "${VBUILD}" ]; then
 	if [ -n "${DISASM}" ]; then
 		if printf '%s\n' "${DISASM}" \
 			| grep -qE "0xf1000000|0xf9800000|0xfac00000|#0xf100|#0xf980|#0xfac0"; then
-			bad "primary_entry disassembly still references the diagnostic framebuffer addresses"
+			DISASM_HAS_DIAG=yes
 		else
-			ok "primary_entry disassembly has no framebuffer addresses (M1/M2 code absent)"
+			DISASM_HAS_DIAG=no
 		fi
 		if printf '%s\n' "${DISASM}" | grep -qE "mov\s+x4, #0xffff"; then
-			bad "primary_entry starts with the diagnostic white-band prologue (mov x4,#0xffff)"
+			DISASM_HAS_PROLOGUE=yes
 		else
-			ok "primary_entry starts without the diagnostic prologue"
+			DISASM_HAS_PROLOGUE=no
+		fi
+		if [ "${DIAG_MODE}" = on ]; then
+			if [ "${DISASM_HAS_DIAG}" = yes ] && [ "${DISASM_HAS_PROLOGUE}" = yes ]; then
+				ok "primary_entry disassembly opens with the M1 band prologue (markers live at the entry point)"
+			else
+				bad "diagnostic build but primary_entry lacks the band prologue (diag=${DISASM_HAS_DIAG} prologue=${DISASM_HAS_PROLOGUE})"
+			fi
+		else
+			if [ "${DISASM_HAS_DIAG}" = no ] && [ "${DISASM_HAS_PROLOGUE}" = no ]; then
+				ok "primary_entry disassembly has no framebuffer code (M1/M2 absent)"
+			else
+				bad "baseline build but primary_entry references diagnostic framebuffer addresses"
+			fi
 		fi
 	else
 		note "objdump could not disassemble primary_entry; binary gate above still applies"
 	fi
 else
 	note "vmlinux not present in ${KBUILD}; disassembly gate skipped"
+fi
+# Marker-semantics reminder (never a pass/fail): compiled-in M1/M2 stores
+# prove kernel entry and DRAM writes only.  Whether anything becomes
+# VISIBLE depends on the DECON command-mode refresh, which is still NOT
+# implemented in any built Image.
+if [ "${DIAG_MODE}" = on ]; then
+	note "M1/M2 compiled in is NOT proof of visible bands: no DECON refresh trigger exists in this Image"
 fi
 
 # ------------------------------------------------- console font (issue #4)

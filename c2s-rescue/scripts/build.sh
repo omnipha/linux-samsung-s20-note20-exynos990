@@ -9,7 +9,16 @@
 # repository, so the checkout stays free of binaries and of foreign code.
 #
 # Usage:
-#   c2s-rescue/scripts/build.sh [--outdir DIR] [--jobs N]
+#   c2s-rescue/scripts/build.sh [--outdir DIR] [--jobs N] [--defconfig NAME]
+#
+# Environment:
+#   C2S_DEFCONFIG   kernel defconfig to build (default: c2s_rescue_defconfig).
+#                   Set to c2s_rescue_diag_defconfig to compile the issue #4
+#                   diagnostic markers (CONFIG_C2S_DIAG=y, first-instruction
+#                   M1/M2 framebuffer bands in arch/arm64/kernel/head.S).
+#                   The name must exist in arch/arm64/configs/.
+#   C2S_OUTDIR      output directory (default: /tmp/opencode/c2s-out)
+#   C2S_AUTHORIZED_KEYS  operator SSH public key baked into the initramfs
 #
 # Exit code 0 means: Image, DTB and initramfs were built and recorded.
 
@@ -20,6 +29,7 @@ RESCUE_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 REPO_DIR=$(cd -- "${RESCUE_DIR}/.." && pwd)
 
 OUTDIR="${C2S_OUTDIR:-/tmp/opencode/c2s-out}"
+DEFCONFIG="${C2S_DEFCONFIG:-c2s_rescue_defconfig}"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 
 # External, redistributable binary dependencies. They are *not* part of this
@@ -33,11 +43,17 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	--outdir) OUTDIR="$2"; shift 2 ;;
 	--jobs)   JOBS="$2";   shift 2 ;;
+	--defconfig) DEFCONFIG="$2"; shift 2 ;;
 	-h|--help)
-		sed -n '2,20p' "$0"; exit 0 ;;
+		sed -n '2,28p' "$0"; exit 0 ;;
 	*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
+
+if [ ! -f "${REPO_DIR}/arch/arm64/configs/${DEFCONFIG}" ]; then
+	echo "ERROR: no such defconfig: ${REPO_DIR}/arch/arm64/configs/${DEFCONFIG}" >&2
+	exit 2
+fi
 
 LOG="${OUTDIR}/build.log"
 mkdir -p "${OUTDIR}"
@@ -82,6 +98,7 @@ step "environment"
 	echo "cpio:        $(cpio --version | head -n1)"
 	echo "dtc:         $(dtc --version)"
 	echo "out dir:     ${OUTDIR}"
+	echo "defconfig:   ${DEFCONFIG}"
 	echo "jobs:        ${JOBS}"
 } | tee -a "${LOG}"
 
@@ -291,8 +308,8 @@ ls -l "${WORK}/initramfs.cpio.gz" | tee -a "${LOG}"
 step "configuring the kernel"
 KBUILD="${OUTDIR}/kbuild"
 mkdir -p "${KBUILD}"
-run "make c2s_rescue_defconfig" make -C "${REPO_DIR}" O="${KBUILD}" \
-	ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- c2s_rescue_defconfig
+run "make ${DEFCONFIG}" make -C "${REPO_DIR}" O="${KBUILD}" \
+	ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- "${DEFCONFIG}"
 
 # Inject the initramfs source. The file name contains ".cpio." exactly once,
 # so usr/Makefile uses it verbatim and skips a second compression pass
