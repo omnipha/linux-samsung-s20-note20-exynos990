@@ -38,6 +38,26 @@ RAW_PROPS = {
     'samsung,pin-con', 'samsung,pin-pud-pdn', 'sound-name-prefix',
 }
 
+# Labels that the base DT provides on a LIVE node, but that sboot's stock
+# DTBO entry[7] re-configures for the HOST role.  The overlay fragment wins
+# over the base DT, so leaving such a label on the live node silently
+# overrides the rescue configuration (e.g. dr_mode = "peripheral" ->
+# "otg").  The label is therefore moved onto the inert stock shell at the
+# given stock path, where the overlay's fragment is discarded.
+#
+# Each entry maps a stock label to the stock path of the node that must
+# carry it.  The stock path is resolved against the stock base DTB, so the
+# relocation is reproducible from the fixtures alone.
+LABEL_RELOCATIONS = {
+    # stock /usb@10E00000/dwc3 shell child.  The live gadget node is
+    # /soc@0/usb@10e00000/usb@0 (labelled usbdrd_dwc3_live in
+    # exynos990.dtsi).  The shell parent is status = "disabled" and
+    # matches no driver in this tree, so of_platform_bus_create() never
+    # descends into it (drivers/of/platform.c:161 and :370) and no second
+    # DWC3 can be probed on reg 0x10e00000.
+    'usbdrd_dwc3': '/usb@10E00000/dwc3',
+}
+
 
 def is_string(v):
     """True for FDT string / string-list values."""
@@ -94,6 +114,29 @@ class AnchorGen:
             if p is None:
                 continue
             labels_by_path.setdefault('/' + p.lstrip('/'), []).append(l)
+        # A label that a stock overlay re-configures must not stay on a live
+        # node of the base DT.  The label is forced into the emitted set and
+        # placed on the inert stock shell instead, so the overlay fragment
+        # resolves to the shell and its configuration is discarded instead of
+        # overriding the live node.
+        relocated = {}
+        for l, target in LABEL_RELOCATIONS.items():
+            if l not in union:
+                continue
+            n = self.node_at(self.stock, target)
+            if n is None:
+                raise SystemExit('LABEL_RELOCATIONS: %s: no stock node at %s'
+                                 % (l, target))
+            relocated[l] = target
+            if l not in missing:
+                missing.append(l)
+                missing.sort()
+            for p, ls in list(labels_by_path.items()):
+                if l in ls:
+                    ls.remove(l)
+                    if not ls:
+                        del labels_by_path[p]
+            labels_by_path.setdefault(target, []).append(l)
         # a stock label may map to a path that is an overlay fragment node
         # (/fragment@lcd/__overlay__/s6e3hab_ddi); such paths are not part of the
         # base tree - the fixup target then is a *path* fixup, handled by the
@@ -204,6 +247,14 @@ class AnchorGen:
  * would alias an unrelated node of this base.  status = "disabled" keeps the
  * rescue kernel from probing shells that this mainline tree does not drive;
  * an overlay may still re-enable a node explicitly.
+ *
+ * Some stock labels are NOT missing from the base DT but still must not
+ * stay where the base puts them: a stock overlay can re-configure the node
+ * the label points at, and the overlay fragment wins over the base DT.  Such
+ * labels are listed in LABEL_RELOCATIONS and are emitted on the inert stock
+ * shell instead, so the overlay fragment resolves to the shell and its
+ * configuration is discarded.  Currently: usbdrd_dwc3 (the stock DTBO
+ * entry[7] would otherwise force dr_mode = "otg" on the live gadget node).
  */'''
         out = [hdr, '/ {']
         for p, n in ctx['sub']:

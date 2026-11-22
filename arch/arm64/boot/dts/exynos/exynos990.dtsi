@@ -334,7 +334,45 @@
 			#size-cells = <1>;
 			status = "disabled";
 
-			usbdrd_dwc3: usb@0 {
+			/*
+			 * NOTE: this node is NOT called "usbdrd_dwc3".
+			 *
+			 * sboot applies the stock DTBO entry[7] to this
+			 * FDT before every boot.  That overlay carries a
+			 * /__fixups__ entry for the label "usbdrd_dwc3"
+			 * and points it at the HOST configuration
+			 * (dr_mode = "otg", maximum-speed =
+			 * "super-speed-plus", the vendor quirk set).
+			 *
+			 * The stock base DTB has "usbdrd_dwc3" on the
+			 * /usb@10E00000/dwc3 shell child, i.e. on a node
+			 * that the stock kernel drives, and our live
+			 * node is a *different* node.  As long as our
+			 * live node carries the label "usbdrd_dwc3", the
+			 * overlay lands the host configuration on the
+			 * live gadget node and overrides the
+			 * dr_mode = "peripheral" set in exynos990-c2s.dts
+			 * (overlay fragments win over the base DT).
+			 * That would turn the rescue gadget into a host
+			 * controller and the USB rescue path would never
+			 * come up.
+			 *
+			 * The label "usbdrd_dwc3" is therefore kept on the
+			 * inert stock shell child (see
+			 * c2s-overlay-anchors.dtsi), so the overlay
+			 * fragment resolves to the shell instead of the
+			 * live node.  The shell parent is
+			 * status = "disabled" and matches no driver in
+			 * this tree, so of_platform_bus_create() never
+			 * descends into it (drivers/of/platform.c:161 and
+			 * :370) and the shell's dwc3 child is never
+			 * populated - no second DWC3 can be probed on
+			 * reg 0x10e00000.
+			 *
+			 * Only c2s uses this node; the other exynos990
+			 * boards (c1s, r8s, x1s) reference &usbdrd.
+			 */
+			usbdrd_dwc3_live: usb@0 {
 				compatible = "snps,dwc3";
 				reg = <0x0 0x10000>;
 				interrupts = <GIC_SPI 310 IRQ_TYPE_LEVEL_HIGH>;

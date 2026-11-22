@@ -19,6 +19,14 @@
  * would alias an unrelated node of this base.  status = "disabled" keeps the
  * rescue kernel from probing shells that this mainline tree does not drive;
  * an overlay may still re-enable a node explicitly.
+ *
+ * Some stock labels are NOT missing from the base DT but still must not
+ * stay where the base puts them: a stock overlay can re-configure the node
+ * the label points at, and the overlay fragment wins over the base DT.  Such
+ * labels are listed in LABEL_RELOCATIONS and are emitted on the inert stock
+ * shell instead, so the overlay fragment resolves to the shell and its
+ * configuration is discarded.  Currently: usbdrd_dwc3 (the stock DTBO
+ * entry[7] would otherwise force dr_mode = "otg" on the live gadget node).
  */
 / {
 abox:abox@18c50000 {
@@ -3078,7 +3086,7 @@ udc:usb@10E00000 {
 	reg = <0x00 0x10e00000 0x10000>;
 	ranges = <>;
 	status = "disabled";
-	dwc3 {
+	usbdrd_dwc3:dwc3 {
 		compatible = "synopsys,dwc3";
 		reg = <0x00 0x10e00000 0x10000>;
 		interrupts = <0x00 0x136 0x04>;

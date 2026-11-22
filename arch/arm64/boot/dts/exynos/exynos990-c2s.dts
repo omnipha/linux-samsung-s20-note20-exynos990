@@ -143,10 +143,32 @@
 	vdd33-supply = <&reg_dummy>;
 };
 
-&usbdrd_dwc3 {
+/*
+ * The label is deliberately called usbdrd_dwc3_live (not usbdrd_dwc3) so
+ * that the stock DTBO entry[7] - which references "usbdrd_dwc3" from
+ * stock /__symbols__ and sets dr_mode = "otg", maximum-speed =
+ * "super-speed-plus" and the vendor quirk set - lands on the *inert*
+ * shell in c2s-overlay-anchors.dtsi, not on this live gadget node.
+ * See the note in exynos990.dtsi.
+ */
+&usbdrd_dwc3_live {
 	dr_mode = "peripheral";
 };
 
 &usbdrd_phy {
 	status = "okay";
+	/* phy-exynos5-usbdrd.c: exynos990_usbdrd_phy sets
+	 * .regulator_names = exynos5_regulator_names = { "vbus",
+	 * "vbus-boost" } and n_regulators = 2; probe() bulk-gets both
+	 * (devm_regulator_bulk_get) and defers forever if either is
+	 * missing. Supply a dummy regulator so the PHY driver probes and
+	 * the gadget can bind.  Evidence: drivers/phy/samsung/
+	 * phy-exynos5-usbdrd.c:1989-1991 (exynos5_regulator_names),
+	 * 2097-2108 (exynos990_usbdrd_phy), 3001-3015 (probe bulk-get).
+	 * The real VBUS/booster rails (MUIC path) are still unknown, so
+	 * these dummies only unblock the driver probe, not actual VBUS
+	 * switching.  See c2s-rescue/docs/evidence.md.
+	 */
+	vbus-supply = <&reg_dummy>;
+	vbus-boost-supply = <&reg_dummy>;
 };
