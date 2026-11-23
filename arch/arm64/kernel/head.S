@@ -296,7 +296,98 @@ SYM_CODE_START(primary_entry)
 	adr_l	x1, __idmap_text_end
 	adr_l	x2, dcache_clean_poc
 	blr	x2
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * M1b: executed with the MMU and D-cache still off, immediately
+	 * after __pi_create_init_idmap() and its cache maintenance, and
+	 * strictly before init_kernel_el().  Plain physical stores only -
+	 * exactly the M1 path that is proven on hardware - and
+	 * deliberately no DECON MMIO and no refresh trigger here.
+	 *
+	 * Purpose: M1's c2s_decon_refresh m1 is the only piece of code
+	 * that touches 0x19050000 while the MMU is off.  If that MMIO
+	 * hangs or aborts, the CPU stops in primary_entry and the
+	 * observed symptom is indistinguishable from "died before M2"
+	 * (white band latched, then nothing).  A band painted *after*
+	 * that call but *before* any further progress is therefore the
+	 * cheapest way to prove the refresh returned: green rows 256..383
+	 * appearing means M1's refresh completed and execution continued
+	 * past create_init_idmap, so the fault is later (M2/idmap/MMU-on).
+	 *
+	 * Colour green 0xff00ff00 in a8r8g8b8 (M1 = white rows 0..127,
+	 * M2 = red rows 128..255): distinct from both under any channel
+	 * order ambiguity.  Band rows 256..383 = offset 256*5760 =
+	 * 0x12c000, 128 rows = 0xb4000 bytes per buffer.
+	 *
+	 * Registers: x4..x12 only.  x19 (MMU state), x20 (boot mode),
+	 * x21 (FDT) are live across this point and are not touched;
+	 * x0..x3 are dead here (boot_args already recorded in
+	 * preserve_boot_args()).
+	 */
+	/*
+	 * Colour encoding: the painters store 64 bits at a time
+	 * ("stp x4, x4"), i.e. *two* a8r8g8b8 pixels per store.  For a
+	 * solid band the low and the high 32-bit half must therefore
+	 * carry the same colour, which is why the value is built from
+	 * four identical 16-bit chunks (one per byte pair of the two
+	 * halves).  green 0xff00ff00 (AARRGGBB: A=ff R=00 G=ff B=00).
+	 */
+	movz	x4, #0xff00			// green 0xff00ff00 (AARRGGBB)
+	movk	x4, #0xff00, lsl #16
+	movk	x4, #0xff00, lsl #32
+	movk	x4, #0xff00, lsl #48
+	movz	x9, #5760			// stride in bytes
+	mov	x10, #128			// band height in rows
+	movz	x11, #0x16, lsl #16		// band row offset 0x168000
+	movk	x11, #0x8000			// 256 rows * 5760 bytes
 
+	movz	x5, #0xf100, lsl #16		// framebuffer 0: 0xf1000000
+	add	x5, x5, x11			// band start
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m1b_fb0_row:
+	mov	x6, x8
+	mov	x7, #360			// 5760 / 16
+.Lc2s_m1b_fb0_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m1b_fb0_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m1b_fb0_row
+
+	movz	x5, #0xf980, lsl #16		// framebuffer 1: 0xf9800000
+	add	x5, x5, x11
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m1b_fb1_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m1b_fb1_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m1b_fb1_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m1b_fb1_row
+
+	movz	x5, #0xfac0, lsl #16		// framebuffer 2: 0xfac00000
+	add	x5, x5, x11
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m1b_fb2_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m1b_fb2_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m1b_fb2_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m1b_fb2_row
+
+	dsb	sy
+#endif
 1:	mov	x0, x19
 	bl	init_kernel_el			// w0=cpu_boot_mode
 	mov	x20, x0
@@ -413,8 +504,18 @@ SYM_FUNC_START_LOCAL(__primary_switched)
 	 * painted range is cleaned to the point of coherency with
 	 * dc civac so the DECON scanout (and a later ramdump) sees it.
 	 */
+	/*
+	 * Colour encoding: "stp x4, x4" stores 64 bits = two a8r8g8b8
+	 * pixels per store, so both 32-bit halves must hold the same
+	 * colour for a solid band.  red 0xffff0000 (AARRGGBB:
+	 * A=ff R=ff G=00 B=00) is therefore built from four chunks
+	 * 0x0000/0xffff/0x0000/0xffff; setting only the low half (as the
+	 * first cut did) paints alternating red/black pixels.
+	 */
 	movz	x4, #0x0000
 	movk	x4, #0xffff, lsl #16		// red 0xffff0000 (AARRGGBB)
+	movk	x4, #0x0000, lsl #32
+	movk	x4, #0xffff, lsl #48
 	movz	x9, #5760			// stride in bytes
 	mov	x10, #128			// band height in rows
 	movz	x11, #0xb, lsl #16		// band row offset 0xb4000
@@ -787,6 +888,118 @@ SYM_FUNC_START_LOCAL(__primary_switch)
 	adrp	x2, __pi_init_idmap_pg_dir
 	bl	__enable_mmu
 
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * M3: first code executed with the MMU and D-cache on, inside
+	 * __primary_switch(), right after __enable_mmu() returned and
+	 * *before* __pi_early_map_kernel() runs (which builds the TTBR1
+	 * kernel mapping, clears BSS and relocates the image).  At this
+	 * point TTBR0 already holds the initial ID map loaded by
+	 * __enable_mmu() (TTBR0 = __pi_init_idmap_pg_dir), which
+	 * identity-maps the three splash framebuffers via
+	 * create_init_idmap(), so x4..x12 stores hit the same DRAM
+	 * addresses as M1/M1b did with the MMU off.
+	 *
+	 * Colour blue 0xff0000ff (AARRGGBB: A=ff R=00 G=00 B=ff), band
+	 * rows 384..511, offset 384*5760 = 0x21c000.  Painted after M1b
+	 * (green, rows 256..383) and before M2 (red, rows 128..255).
+	 *
+	 * D-cache is on from __enable_mmu() onwards, so the band is
+	 * cleaned to PoC (dc civac over 0xb4000 bytes = 11520 lines)
+	 * exactly like M2.  No DECON MMIO here: this is the first code
+	 * to touch the ID map while the MMU is live, and that path is
+	 * not proven on hardware.  M3 only becomes visible when M2's
+	 * refresh latches the framebuffer further down the boot.
+	 *
+	 * Registers: x4..x12 only.  x20 (boot mode) and x21 (FDT) are
+	 * live across this point and are not touched; x0..x3 are dead
+	 * (__enable_mmu's SCTLR/TTBR arguments), x19 is dead (already
+	 * consumed by `mov x0, x19` in primary_entry).
+	 */
+	/*
+	 * Colour encoding (see M1b): "stp x4, x4" stores two a8r8g8b8
+	 * pixels per store, so both 32-bit halves must hold the same
+	 * colour and the value needs all four 16-bit chunks set.
+	 * blue 0xff0000ff (A=ff R=00 G=00 B=ff) -> chunks
+	 * 0x00ff/0xff00/0x00ff/0xff00 from the LSB up.
+	 */
+	movz	x4, #0x00ff			// blue 0xff0000ff (AARRGGBB)
+	movk	x4, #0xff00, lsl #16
+	movk	x4, #0x00ff, lsl #32
+	movk	x4, #0xff00, lsl #48
+	movz	x9, #5760			// stride in bytes
+	mov	x10, #128			// band height in rows
+	movz	x11, #0x21, lsl #16		// band row offset 0x21c000
+	movk	x11, #0xc000			// 384 rows * 5760 bytes
+
+	movz	x5, #0xf100, lsl #16		// framebuffer 0: 0xf1000000
+	add	x5, x5, x11			// band start
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m3_fb0_row:
+	mov	x6, x8
+	mov	x7, #360			// 5760 / 16
+.Lc2s_m3_fb0_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m3_fb0_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m3_fb0_row
+	mov	x6, x5
+	mov	x12, #11520			// 0xb4000 / 64 cache lines
+.Lc2s_m3_fb0_flush:
+	dc	civac, x6
+	add	x6, x6, #64
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m3_fb0_flush
+
+	movz	x5, #0xf980, lsl #16		// framebuffer 1: 0xf9800000
+	add	x5, x5, x11
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m3_fb1_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m3_fb1_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m3_fb1_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m3_fb1_row
+	mov	x6, x5
+	mov	x12, #11520
+.Lc2s_m3_fb1_flush:
+	dc	civac, x6
+	add	x6, x6, #64
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m3_fb1_flush
+
+	movz	x5, #0xfac0, lsl #16		// framebuffer 2: 0xfac00000
+	add	x5, x5, x11
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m3_fb2_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m3_fb2_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m3_fb2_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m3_fb2_row
+	mov	x6, x5
+	mov	x12, #11520
+.Lc2s_m3_fb2_flush:
+	dc	civac, x6
+	add	x6, x6, #64
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m3_fb2_flush
+
+	dsb	sy
+#endif
 	adrp	x1, early_init_stack
 	mov	sp, x1
 	mov	x29, xzr
@@ -794,6 +1007,108 @@ SYM_FUNC_START_LOCAL(__primary_switch)
 	mov	x1, x21				// pass the FDT
 	bl	__pi_early_map_kernel		// Map and relocate the kernel
 
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * M4: executed after __pi_early_map_kernel() returned, i.e. after
+	 * the TTBR1 kernel mapping has been built, BSS cleared and the
+	 * image relocated (and after remap_idmap_for_lpa2(), if it ran),
+	 * and immediately before the jump to __primary_switched().
+	 *
+	 * At this point the *initial* ID map is still installed in TTBR0
+	 * (it is only torn down much later in cpu_uninstall_idmap() during
+	 * setup_arch()), so the splash framebuffers are still reachable
+	 * identity-mapped at exactly the same virtual addresses as in M3.
+	 *
+	 * Colour magenta 0xffff00ff (AARRGGBB: A=ff R=ff G=00 B=ff), band
+	 * rows 512..639, offset 512*5760 = 0x2d0000.  This is the last
+	 * band of the ladder: it is the last point before start_kernel()
+	 * at which the three splash buffers are still guaranteed to be
+	 * mapped, so its presence proves the whole early boot path
+	 * (__enable_mmu -> early_map_kernel -> relocation) completed.
+	 *
+	 * As in M3: D-cache on, so the band is cleaned to PoC with
+	 * dc civac over 0xb4000 bytes per buffer; no DECON MMIO here.
+	 *
+	 * Registers: x4..x12 only.  x20 (boot mode) and x21 (FDT) stay
+	 * live and untouched; x0 is dead here (early_map_kernel's
+	 * return value is unused), x1 is dead.
+	 */
+	movz	x4, #0x00ff			// magenta 0xffff00ff (AARRGGBB)
+	movk	x4, #0xffff, lsl #16
+	movk	x4, #0x00ff, lsl #32
+	movk	x4, #0xffff, lsl #48
+	movz	x9, #5760			// stride in bytes
+	mov	x10, #128			// band height in rows
+	movz	x11, #0x2d, lsl #16		// band row offset 0x2d0000
+
+	movz	x5, #0xf100, lsl #16		// framebuffer 0: 0xf1000000
+	add	x5, x5, x11			// band start
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m4_fb0_row:
+	mov	x6, x8
+	mov	x7, #360			// 5760 / 16
+.Lc2s_m4_fb0_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m4_fb0_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m4_fb0_row
+	mov	x6, x5
+	mov	x12, #11520			// 0xb4000 / 64 cache lines
+.Lc2s_m4_fb0_flush:
+	dc	civac, x6
+	add	x6, x6, #64
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m4_fb0_flush
+
+	movz	x5, #0xf980, lsl #16		// framebuffer 1: 0xf9800000
+	add	x5, x5, x11
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m4_fb1_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m4_fb1_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m4_fb1_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m4_fb1_row
+	mov	x6, x5
+	mov	x12, #11520
+.Lc2s_m4_fb1_flush:
+	dc	civac, x6
+	add	x6, x6, #64
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m4_fb1_flush
+
+	movz	x5, #0xfac0, lsl #16		// framebuffer 2: 0xfac00000
+	add	x5, x5, x11
+	mov	x8, x5
+	mov	x12, x10
+.Lc2s_m4_fb2_row:
+	mov	x6, x8
+	mov	x7, #360
+.Lc2s_m4_fb2_col:
+	stp	x4, x4, [x6], #16
+	subs	x7, x7, #1
+	b.ne	.Lc2s_m4_fb2_col
+	add	x8, x8, x9
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m4_fb2_row
+	mov	x6, x5
+	mov	x12, #11520
+.Lc2s_m4_fb2_flush:
+	dc	civac, x6
+	add	x6, x6, #64
+	subs	x12, x12, #1
+	b.ne	.Lc2s_m4_fb2_flush
+
+	dsb	sy
+#endif
 	ldr	x8, =__primary_switched
 	adrp	x0, KERNEL_START		// __pa(KERNEL_START)
 	br	x8
