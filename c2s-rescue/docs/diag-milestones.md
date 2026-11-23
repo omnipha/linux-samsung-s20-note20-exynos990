@@ -403,3 +403,122 @@ taken.
   this candidate (see `evidence.md` and `boot-and-open-points.md`).
 
 M3 and the display-independent trace region remain open.
+
+## Candidate 4 (turn 2026-11-23): M1b + M2 fix + M3 + M4 ladder
+
+Candidate 3 landed on hardware as: white band (rows 0..127) over the
+standing Samsung logo, **no** red band, **no** USB enumeration, **no**
+SSH. Three facts make "the kernel died before M2" the only fully
+consistent hypothesis - but one more candidate symptom is
+indistinguishable from it: M1's `c2s_decon_refresh m1` is the sole
+piece of code in `primary_entry` that performs **MMIO while the MMU is
+off**, so a hang or external abort there stops the CPU in exactly the
+place where the white band has already been written to DRAM and may
+already have been latched. This candidate turns that ambiguity into a
+readable band.
+
+### Defect found while auditing the emitted encodings
+
+Every marker paints with `stp x4, x4, [x6], #16`, which stores 64 bits
+= **two** a8r8g8b8 pixels per store. For a solid band both 32-bit
+halves must therefore carry the same colour, i.e. the value needs all
+four 16-bit chunks set. Auditing `objdump` against that rule found two
+real defects:
+
+| marker | code before | painted colour before | code after | painted colour after |
+|---|---|---|---|---|
+| M1 white | 4 chunks (`movz` + 3 `movk`) | solid `0xffffffff` | unchanged | solid `0xffffffff` |
+| M2 red | `movz #0` + `movk #0xffff<<16` only (2 chunks) | alternating `0xffff0000` / `0x00000000` = red **and black** stripes | 4 chunks | solid `0xffff0000` |
+| M1b green | 2 chunks, and offset `0x12c000` (rows 245, not 256) | alternating `0xff00ff00` / `0` at the wrong rows | 4 chunks, offset `0x168000` | solid `0xff00ff00`, rows 256..383 |
+| M3 blue | 2 chunks (`movz #0x00ff` + `movk #0xff00<<16`) | alternating `0xff0000ff`/`0`, and **identical to M4's build** | 4 chunks | solid `0xff0000ff`, rows 384..511 |
+| M4 magenta | 2 chunks | alternating `0xffff00ff`/`0`, identical to M3's | 4 chunks | solid `0xffff00ff`, rows 512..639 |
+
+M1 proved on hardware *because* it already had all four chunks; M2/M3/M4
+would have painted striped, near-invisible bands. Candidate 2/3's
+"M2 red not observed" was therefore partly a **painting** defect, not
+only a control-flow defect.
+
+### The ladder
+
+| marker | rows | colour (AARRGGBB) | where | MMU | DECON refresh |
+|---|---|---|---|---|---|
+| M1 | 0..127 | white `0xffffffff` | `primary_entry`, first code | off | yes (`m1`) |
+| M1b | 256..383 | green `0xff00ff00` | `primary_entry`, after `create_init_idmap` + cache maintenance, before `init_kernel_el` | off | **no** |
+| M3 | 384..511 | blue `0xff0000ff` | `__primary_switch`, immediately after `__enable_mmu()` | on | **no** |
+| M2 | 128..255 | red `0xffff0000` | `__primary_switched`, first code | on | yes (`m2`) |
+| M4 | 512..639 | magenta `0xffff00ff` | `__primary_switch`, after `__pi_early_map_kernel()`, before the jump to `__primary_switched` | on | **no** |
+
+Readout contract:
+
+* white only -> M1's refresh never returned, or the CPU died before M1b;
+  **M1b green present but nothing else** -> M1's refresh returned and
+  `create_init_idmap()` completed, so the fault is at or after
+  `init_kernel_el()`/`__cpu_setup()`/`__enable_mmu()`.
+* green + blue -> `__enable_mmu()` returned and the MMU is on with the
+  ID map still in TTBR0 (M3 paints through it), so the fault is inside
+  `__pi_early_map_kernel()` (relocation, BSS clear, TTBR1 build).
+* red -> the ID map survived `early_map_kernel()` and M2 ran with the
+  MMU on.
+* magenta -> the whole early path up to `start_kernel()` completed.
+
+M1b/M3/M4 deliberately paint and, where the D-cache is on, `dc civac`+
+`dsb sy` the band but perform **no** DECON MMIO. Only M1 and M2 trigger
+a refresh, so a band painted after the last refresh is latched by that
+same refresh later in the sequence (M1b/M3/M2) or by M2's refresh
+(M4's own trigger is not issued), keeping the number of MMIO-while-MMU-off
+sites at exactly the one that is already proven on hardware.
+
+### Host evidence (candidate 4)
+
+* Build: `C2S_DEFCONFIG=c2s_rescue_diag_defconfig
+  C2S_AUTHORIZED_KEYS=$HOME/.ssh/id_ed25519.pub build.sh`, exit 0.
+* `verify.sh /tmp/opencode/c2s-diag5-out`: **173 passed, 0 failed**
+  (same count as the diag3 baseline; the added band gate replaces
+  nothing).
+* New gate: instruction-level scan of the **packaged** Image that
+  anchors on the fixed `movz x9, #5760` / `movz x10, #128` prologue of
+  every marker and walks the colour build in front of it, requiring
+  exactly `movz` + 3 `movk` into `x4` and `lo32 == hi32`.
+  * on this candidate: 5 markers, all `SOLID` (RC=0).
+  * negative control on the diag3 Image: `marker@0x6e84b0
+    colour=0x00000000ffff0000 TRUNCATED (2/4 chunks)` (RC=1), i.e. the
+    gate fails on the very defect it was written for.
+* DECON MMIO count in `vmlinux` is still **3** (`mov xN, #0x19050000`
+  at `primary_entry` = M1, `create_init_idmap()` = the idmap device
+  constant, `__primary_switched` = M2); M1b/M3/M4 add none.
+* Kernel payload extracted from the signed `boot.img` (Samsung
+  `ANDR` header, `kernel_size` at +8, payload at `+0x800`) is
+  byte-identical to `kbuild/.../Image`, and the band gate run against
+  that extracted payload reports the same 5 `SOLID` markers.
+
+### Artefacts (candidate 4)
+
+| Artefact | Path | Size (B) | sha256 |
+|---|---|---|---|
+| boot.img (signed, candidate 4) | `/tmp/opencode/c2s-diag5-out/boot.img` | 61 865 984 | `852e868d1e4c3a9d608797116f230a9e31f2cc5abff0890406907c2fa9809f5b` |
+| Image (diag5) | `/tmp/opencode/c2s-diag5-out/kbuild/arch/arm64/boot/Image` | 11 891 200 | `d6c45e58d6f60e7d52280f492ccf37e262ab5019d93c73cd6b649df30dec80ee` |
+| DTB | `/tmp/opencode/c2s-diag5-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 867 | `43424d49fc43e92ef00cff558058a3edb232592ab3bd89e6f4262b449fb122f2` |
+| initramfs | `/tmp/opencode/c2s-diag5-out/work/initramfs.cpio.gz` | 2 496 684 | `eaa35da0a3029b371af55fc19c7049ac52f0ce893dd451a559c0a0a0ee48ce8d` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table
+`d7b7ab1e` ok, `avbtool verify_image` OK.
+
+Band addresses in the Image (offset = VA - `0xffff800080000000`):
+
+| marker | Image offset | first instruction | value |
+|---|---|---|---|
+| M1 white | `0x6cc0b8` | `mov x4, #0xffff` | `0xffffffffffffffff` |
+| M1b green | `0x6cc224` | `mov x4, #0xff00` | `0xff00ff00ff00ff00` |
+| M3 blue | `0x6cc814` | `mov x4, #0x00ff` | `0xff0000ffff0000ff` |
+| M4 magenta | `0x6cc928` | `mov x4, #0x00ff` | `0xffff00ffffff00ff` |
+| M2 red | `0x6e84b0` | `mov x4, #0x0` | `0xffff0000ffff0000` |
+
+### Still open
+
+* sudo/NOPASSWD packaging (binary + active `@includedir` + root-owned
+  0440 rule verified in the packed cpio) - required by issue #5 task 3,
+  **not** in this candidate.
+* The USB gadget path fixes for issue #5 task 2 are separate from the
+  markers; this candidate changes only `head.S` and `verify.sh`.
+* Every claim about what the panel shows remains host-unverified until
+  the coordinator runs the hardware readout.

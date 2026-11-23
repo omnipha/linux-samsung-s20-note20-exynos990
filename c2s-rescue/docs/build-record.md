@@ -768,3 +768,84 @@ to be skipped, but only the SoC's ID registers can confirm it.
 * The `earlier` USB-only image `eaa841ac` hangs at boot with zero USB
   signals for 200s - unexplained, coordinator-owned, not part of this
   commit's scope; this candidate does not attempt to fix it.
+
+## Build 5 (turn 2026-11-23): marker ladder M1b/M2-fix/M3/M4
+
+### Build commands (build host)
+
+```
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag5-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag5-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag5-out
+```
+
+`build.sh` exit 0; `package-bootimg.sh` exit 0; `verify.sh` exit 0.
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag5, signed) | `/tmp/opencode/c2s-diag5-out/boot.img` | 61 865 984 | `852e868d1e4c3a9d608797116f230a9e31f2cc5abff0890406907c2fa9809f5b` |
+| Image (diag5) | `/tmp/opencode/c2s-diag5-out/kbuild/arch/arm64/boot/Image` | 11 891 200 | `d6c45e58d6f60e7d52280f492ccf37e262ab5019d93c73cd6b649df30dec80ee` |
+| DTB | `/tmp/opencode/c2s-diag5-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 867 | `43424d49fc43e92ef00cff558058a3edb232592ab3bd89e6f4262b449fb122f2` |
+| initramfs | `/tmp/opencode/c2s-diag5-out/work/initramfs.cpio.gz` | 2 496 684 | `eaa35da0a3029b371af55fc19c7049ac52f0ce893dd451a559c0a0a0ee48ce8d` |
+| initramfs cpio (uncompressed) | `/tmp/opencode/c2s-diag5-out/work/initramfs.cpio` | - | `f4cc661bf359e3cf7e589e9577e19cf6bab6ef079d176fb61a943e929fbeb46b` |
+
+The DTB is byte-identical to candidates 2/3 (`43424d49…`) and the
+initramfs is byte-identical to the diag3 candidate — this build changes
+only `arch/arm64/kernel/head.S` (markers) and `c2s-rescue/scripts/verify.sh`
+(new gate).
+
+### Verification
+
+* `verify.sh /tmp/opencode/c2s-diag5-out`: **173 passed, 0 failed**
+  — the same count as the diag3 baseline. Two of the reported lines
+  differ textually from diag3 (`count=6` instead of `count=3` for the
+  framebuffer MOVZ gate, because two more markers move the `0xf100`
+  immediate, and the PID/path embedded in the dropbear and
+  fault-injection lines); the gate *sets* are otherwise identical.
+* New band-colour gate: **5 markers, all `SOLID`** on the packaged
+  Image; **negative control** on `/tmp/opencode/c2s-diag3-out` fails
+  with `marker@0x6e84b0 colour=0x00000000ffff0000 TRUNCATED (2/4 chunks)`.
+* DECON MMIO count in the Image: still `3` (`0x19050000` in M1, in
+  `create_init_idmap()`, and in M2) — M1b/M3/M4 add no MMIO.
+* AVB: `avbtool verify_image` OK, algorithm `SHA256_RSA4096`,
+  rollback index **13**, Samsung DT table `d7b7ab1e`, FDT 141 867 B ==
+  kbuild DTB, wrapper + packed image verified.
+* authorized_keys: packaged cpio checked against
+  `~/.ssh/id_ed25519.pub` (`SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE`),
+  mode 0600, regular file read from the packed cpio (not the staging tree).
+* Packed-image integrity: the kernel payload embedded in `boot.img`
+  (Samsung `ANDR` header, `kernel_size` at offset 8 = 11 891 200,
+  payload at `0x800`) compares **byte-identical** to
+  `kbuild/arch/arm64/boot/Image`, and the band gate run against a
+  file extracted from `boot.img` reports the same 5 `SOLID` markers.
+
+### Source diff for this build
+
+```
+ arch/arm64/kernel/head.S     | 315 ++++++++++++++++++++++++
+ c2s-rescue/scripts/verify.sh |  95 +++++++++
+ c2s-rescue/docs/*.md         | (records only)
+ 3 files changed, 410 insertions(+)
+```
+
+`git status`: only those three paths are modified; nothing staged yet at
+the time of writing.
+
+### What is still NOT proven
+
+* Whether the panel shows any of the five bands (hardware only).
+* Whether M1's DECON refresh returns at all on hardware — M1b exists
+  precisely to break the tie between "died before M2" and "the MMU-off
+  MMIO at 0x19050000 hung".
+* The sudo/NOPASSWD packaging required by issue #5 task 3 is **not** in
+  this build; `verify.sh` has no sudo gate yet.
+* USB gadget enumeration (issue #5 task 2) is not exercised by this
+  build beyond the DT/gadget gates that already passed for diag3.
