@@ -202,6 +202,101 @@ elif [ "${IMG_HAS_DIAG}" = on ]; then
 else
 	ok "Image contains no diagnostic framebuffer MOVZ immediates (0xf100/0xf980/0xfac0)"
 fi
+# Band-colour solidness gate. Every marker builds its a8r8g8b8 colour as a
+# 64-bit value for a "stp x4, x4, [xN], #16" store, which writes *two*
+# pixels per store. The two 32-bit halves must therefore be identical, i.e.
+# all four 16-bit chunks must be set. Building only the low half (a movz
+# plus one movk) silently paints alternating <colour>/0x00000000 pixels and
+# the band reads as a near-black or transparent stripe on the panel. This
+# gate reconstructs the value from the emitted movz+3x movk and requires
+# low32 == high32 for every marker it finds.
+PY_BAND=$(python3 - "${IMAGE}" <<'PYEOF'
+import struct, sys
+
+data = open(sys.argv[1], "rb").read()
+n = len(data)
+
+def w(off):
+    return struct.unpack_from("<I", data, off)[0]
+
+def is_movz_x4(iw):
+    return (iw & 0xFFE00000) == 0xD2800000 and (iw & 0x1F) == 4 and ((iw >> 21) & 3) == 0
+
+def is_movk_x4(iw, hw):
+    return (iw & 0xFFE00000) == (0xF2800000 | (hw << 21)) and (iw & 0x1F) == 4
+
+STRIDE = 0xD282D009   # movz x9, #5760
+HEIGHT = 0xD280100A   # movz x10, #128
+
+markers = []
+# Anchor on the fixed stride+height prologue every marker emits, then walk
+# the colour build immediately in front of it, longest match first (4
+# chunks). A build that stops early (movz + 1x movk, the defect seen in the
+# M2 red band of the diag3 candidate) must be reported as TRUNCATED rather
+# than skipped, otherwise the gate cannot fail on it.
+for s_off in range(0, n - 8, 4):
+    if w(s_off) != STRIDE or w(s_off + 4) != HEIGHT:
+        continue
+    found = None
+    for c in (4, 3, 2, 1):
+        start = s_off - 4 * c
+        if start < 0:
+            continue
+        if not is_movz_x4(w(start)):
+            continue
+        val = (w(start) >> 5) & 0xFFFF
+        ok = True
+        for k in range(1, c):
+            iw = w(start + 4 * k)
+            if not is_movk_x4(iw, k):
+                ok = False
+                break
+            val |= (((iw >> 5) & 0xFFFF) << (16 * k))
+        if not ok:
+            continue
+        found = (start, val, c)
+        break
+    if found is None:
+        continue
+    markers.append(found)
+
+if not markers:
+    print("no band colour sequences (movz x4 + [movk x4]...) in the Image")
+    sys.exit(0)
+
+bad = 0
+for off, val, chunks in markers:
+    lo, hi = val & 0xFFFFFFFF, (val >> 32) & 0xFFFFFFFF
+    if chunks != 4:
+        bad += 1
+        print("marker@0x%x colour=0x%016x TRUNCATED (%d/4 chunks; would paint striped/faint band)" %
+              (off, val, chunks))
+    elif lo != hi:
+        bad += 1
+        print("marker@0x%x colour=0x%016x lo32=0x%08x hi32=0x%08x BROKEN" %
+              (off, val, lo, hi))
+    else:
+        print("marker@0x%x colour=0x%016x lo32=0x%08x hi32=0x%08x SOLID" %
+              (off, val, lo, hi))
+sys.exit(1 if bad else 0)
+PYEOF
+)
+BAND_RC=$?
+BAND_COUNT=$(printf '%s\n' "${PY_BAND}" | grep -c 'colour=' || true)
+BAND_BROKEN=$(printf '%s\n' "${PY_BAND}" | grep 'BROKEN' || true)
+if [ "${BAND_COUNT}" -eq 0 ]; then
+	if [ "${DIAG_MODE}" = on ]; then
+		bad "CONFIG_C2S_DIAG=y but no band colour sequence (movz x4 + 3x movk x4) is present in the Image"
+	else
+		ok "Image carries no band colour sequences (expected without CONFIG_C2S_DIAG)"
+	fi
+elif [ -n "${BAND_BROKEN}" ]; then
+	bad "band colour sequence(s) with mismatched 32-bit halves (would paint striped/faint bands): $(printf '%s\n' "${BAND_BROKEN}" | tr '\n' ' ')"
+elif [ "${DIAG_MODE}" != on ]; then
+	bad "band colour sequence(s) present although CONFIG_C2S_DIAG is off: $(printf '%s\n' "${PY_BAND}" | grep 'colour=' | tr '\n' ' ')"
+else
+	ok "all ${BAND_COUNT} band colour sequence(s) are solid (both 32-bit halves equal)"
+fi
 # Positive control: the SAME scan must flag the preserved diagnostic
 # reference Image (the earlier CONFIG_C2S_DIAG=y build), otherwise the
 # scan above proves nothing.
