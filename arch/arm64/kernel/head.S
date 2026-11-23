@@ -82,6 +82,112 @@
 	 *  x20        primary_entry() .. __primary_switch()    CPU boot mode
 	 *  x21        primary_entry() .. start_kernel()        FDT pointer passed at boot in x0
 	 */
+
+/*
+ * Issue #4 diagnostic trigger (guarded by CONFIG_C2S_DIAG).
+ *
+ * Mirrors lk3rd's decon_show_buffer_update() (platform/exynos9830/dpu/
+ * decon_core.c:114-134) so a freshly painted framebuffer is actually
+ * pushed to the panel.  Register offsets/bits are from
+ * platform/exynos9830/include/dpu/cal/regs-decon.h:
+ *
+ *   GLOBAL_CONTROL         0x0000   DECON_EN 1<<1  DECON_EN_F 1<<0  SRESET 1<<28
+ *   SHADOW_REG_UPDATE_REQ  0x0060   GLOBAL 1<<31   FOR_DECON 0x3f
+ *   HW_SW_TRIG_CONTROL     0x0070   HW_TRIG_EN 1<<0  HW_TRIG_MASK_DECON 1<<4
+ *
+ * Every access is a read-modify-write (decon_write_mask,
+ * include/dpu/decon.h:476-482): val = (val & mask) | (old & ~mask).  The
+ * masks used here are the same ones the vendor's refresh uses, so:
+ *   - GLOBAL_CONTROL is written with mask 0x3 (DECON_EN|DECON_EN_F), so
+ *     the written bit 28 (SRESET) is whatever the read returned for it,
+ *     not an unconditional 0.  Vendor evidence: decon_reg_reset() writes
+ *     bit 28 as 1 *on purpose* (cal/decon_reg.c:33, write_mask with
+ *     mask=SRESET) and then polls for it to self-clear (cal/decon_reg.c:34-38),
+ *     i.e. bit 28 is a self-clearing write-1-to-reset bit.  decon_reg_
+ *     direct_on_off() uses exactly the mask 0x3 shown above
+ *     (cal/decon_reg.c:66-67) and therefore has the same property: it
+ *     preserves whatever the hardware reported for bit 28.  We match the
+ *     vendor behaviour but we do not prove the value read for bit 28 is
+ *     0 at this point in the boot, so this is a known limitation, not a
+ *     safety guarantee.
+ *   - HW_SW_TRIG_CONTROL is touched with mask 0x11 = HW_TRIG_EN|
+ *     HW_TRIG_MASK_DECON only; sboot's handoff value 0x3070 (bits 4,5,6,
+ *     12,13 set: the DECON/slave masks plus edge polarity/active value,
+ *     cmd_boot.c:730-731) is preserved and restored by the RMW, and the
+ *     bits 5,6,12,13 are not written.  0x11 is not an encodable ARM64
+ *     logical immediate, so it is applied as two single-bit ops.
+ *
+ * The two polls are iteration-bounded (16384 iterations each).  That
+ * bounds the *loop*: with the arch timer disabled before kernel_entry
+ * (cmd_boot.c:732-734) no real timeout can be built here, so a DECON
+ * that never sets RUN_STATUS or never clears SHADOW_REG_UPDATE_REQ only
+ * costs iterations and the sequence then falls through.  It does NOT
+ * protect against a read from 0x19050000 that hangs the bus or raises
+ * an external abort - that would stop the CPU regardless of the counter,
+ * and nothing in this file can prevent it.
+ *
+ * Uses only x4 (base), x5 (data) and x6 (poll counter) — all
+ * caller-saved scratch.  x0..x3 hold the bootloader arguments that
+ * preserve_boot_args() records and x19..x21 carry boot state across M2,
+ * so neither group is clobbered at either call site.  That is a
+ * register-usage claim only, not a statement that the MMIO accesses
+ * themselves cannot fault.
+ *
+ * id is a unique label suffix (GNU as \@ is avoided for portability).
+ */
+	.macro	c2s_decon_refresh, id
+	movz	x4, #0x1905, lsl #16		// DECON0_BASE_ADDR (display_sfr.h:40)
+
+	// 1) all-win shadow update request: SHADOW_REG_UPDATE_REQ |= 0x3f
+	ldr	w5, [x4, #0x60]
+	orr	w5, w5, #0x3f
+	str	w5, [x4, #0x60]
+
+	// 2) decon_reg_direct_on_off(1): GLOBAL_CONTROL |= DECON_EN|DECON_EN_F
+	//    mask 0x3 -> bit 28 (SRESET) is written back as read (see note above)
+	ldr	w5, [x4, #0x00]
+	orr	w5, w5, #0x3
+	str	w5, [x4, #0x00]
+
+	// 3) decon_reg_update_req_global: SHADOW_REG_UPDATE_REQ |= 1<<31
+	ldr	w5, [x4, #0x60]
+	orr	w5, w5, #0x80000000
+	str	w5, [x4, #0x60]
+
+	// 4) wait for RUN_STATUS (GLOBAL_CONTROL bit 4), bounded
+	mov	x6, #0x4000
+.Lc2s_run_wait_\id:
+	ldr	w5, [x4, #0x00]
+	tbnz	w5, #4, .Lc2s_run_ok_\id
+	subs	x6, x6, #1
+	b.ne	.Lc2s_run_wait_\id
+.Lc2s_run_ok_\id:
+
+	// 5) set_trigger(ENABLE): HW_SW_TRIG_CONTROL = (old & ~0x11) | 0x1
+	//    clears HW_TRIG_MASK_DECON, sets HW_TRIG_EN -> unmask + arm trigger
+	ldr	w5, [x4, #0x70]
+	bic	w5, w5, #0x10			// HW_TRIG_MASK_DECON (1<<4)
+	orr	w5, w5, #0x1			// HW_TRIG_EN (1<<0)
+	str	w5, [x4, #0x70]
+
+	// 6) wait for SHADOW_REG_UPDATE_REQ to clear, bounded
+	mov	x6, #0x4000
+.Lc2s_upd_wait_\id:
+	ldr	w5, [x4, #0x60]
+	cbz	w5, .Lc2s_upd_ok_\id
+	subs	x6, x6, #1
+	b.ne	.Lc2s_upd_wait_\id
+.Lc2s_upd_ok_\id:
+
+	// 7) set_trigger(DISABLE): HW_SW_TRIG_CONTROL = (old & ~0x11) | 0x10
+	//    restores the masked state (matches sboot's 0x3070 handoff)
+	ldr	w5, [x4, #0x70]
+	bic	w5, w5, #0x1			// HW_TRIG_EN
+	orr	w5, w5, #0x10			// HW_TRIG_MASK_DECON
+	str	w5, [x4, #0x70]
+	dsb	sy
+	.endm
+
 SYM_CODE_START(primary_entry)
 #ifdef CONFIG_C2S_DIAG
 	/*
@@ -152,6 +258,11 @@ SYM_CODE_START(primary_entry)
 	b.ne	.Lc2s_m1_fb2_row
 
 	dsb	sy
+
+	// Push the freshly painted band to the panel.  The MMU is still off
+	// here, so 0x19050000 is reached as a plain physical device access
+	// (exactly like sboot/lk3rd do it), with no mapping required.
+	c2s_decon_refresh m1
 #endif
 	bl	record_mmu_state
 	bl	preserve_boot_args
@@ -377,6 +488,12 @@ SYM_FUNC_START_LOCAL(__primary_switched)
 	b.ne	.Lc2s_m2_fb2_flush
 
 	dsb	sy
+
+	// Push the M2 band to the panel.  The MMU is on now, so the access
+	// to 0x19050000 goes through the device mapping added in
+	// create_init_idmap() (map_range.c); x4..x6 are reused and reloaded
+	// by the init_task code right after.
+	c2s_decon_refresh m2
 #endif
 	adr_l	x4, init_task
 	init_cpu_task x4, x5, x6

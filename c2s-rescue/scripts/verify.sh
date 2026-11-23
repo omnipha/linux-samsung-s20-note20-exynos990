@@ -262,10 +262,61 @@ else
 fi
 # Marker-semantics reminder (never a pass/fail): compiled-in M1/M2 stores
 # prove kernel entry and DRAM writes only.  Whether anything becomes
-# VISIBLE depends on the DECON command-mode refresh, which is still NOT
-# implemented in any built Image.
+# VISIBLE depends on the DECON command-mode refresh, which this Image now
+# implements as a trigger (see the gate below) - a compiled trigger is
+# still NOT proof of a panel update until a hardware run confirms it.
 if [ "${DIAG_MODE}" = on ]; then
-	note "M1/M2 compiled in is NOT proof of visible bands: no DECON refresh trigger exists in this Image"
+	note "M1/M2 compiled in is NOT proof of visible bands: the DECON trigger is compiled in (see the gate below) but a panel update is hardware evidence only"
+fi
+
+# ------------------------------------- DECON trigger gate (CONFIG_C2S_DIAG)
+# The refresh trigger materialises the DECON0 base with
+#   movz xN, #0x1905, lsl #16   ->  0x19050000 (DECON0_BASE_ADDR)
+# once per call site (M1 in primary_entry, M2 in __primary_switched), so a
+# DIAG build must contain >=2 of those MOVZ and a baseline build none.
+# Instruction-level scan (same method as the framebuffer scan above), not a
+# loose byte grep.  The scan counts occurrences globally and cannot locate
+# them: proving the two individual call sites needs the vmlinux
+# disassembly, which is recorded in c2s-rescue/docs/diag-milestones.md.
+if [ "${DIAG_MODE}" = on ]; then
+	PY_DECON=$(python3 - "${IMAGE}" <<'PYEOF'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+hits = []
+for off in range(0, len(data) - 3, 4):
+    w = struct.unpack_from("<I", data, off)[0]
+    # MOVZ Xd, #imm16, LSL #16 : sf=1 opc=10 100101 hw=01 -> 0xD2A00000
+    if (w & 0xFFE00000) != 0xD2A00000:
+        continue
+    if ((w >> 5) & 0xFFFF) == 0x1905:
+        hits.append(off)
+print("DECON base MOVZ count=%d first=0x%x" % (len(hits), hits[0] if hits else 0))
+PYEOF
+)
+	PY_DECON_COUNT=$(printf '%s\n' "${PY_DECON}" | sed -n 's/.*count=\([0-9]\{1,\}\).*/\1/p')
+	if [ -n "${PY_DECON_COUNT}" ] && [ "${PY_DECON_COUNT}" -ge 2 ]; then
+		ok "Image carries >=2 occurrences of the DECON0 base immediate (0x19050000); where they sit needs vmlinux disassembly: ${PY_DECON}"
+	else
+		bad "CONFIG_C2S_DIAG=y but the Image lacks >=2 occurrences of the DECON0 base immediate: ${PY_DECON}"
+	fi
+else
+	PY_DECON=$(python3 - "${IMAGE}" <<'PYEOF'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+n = 0
+for off in range(0, len(data) - 3, 4):
+    w = struct.unpack_from("<I", data, off)[0]
+    if (w & 0xFFE00000) == 0xD2A00000 and ((w >> 5) & 0xFFFF) == 0x1905:
+        n += 1
+print("DECON base MOVZ count=%d" % n)
+PYEOF
+)
+	PY_DECON_COUNT=$(printf '%s\n' "${PY_DECON}" | sed -n 's/.*count=\([0-9]\{1,\}\).*/\1/p')
+	if [ "${PY_DECON_COUNT}" = "0" ]; then
+		ok "baseline Image carries no DECON0 trigger base: ${PY_DECON}"
+	else
+		bad "CONFIG_C2S_DIAG off but the Image carries a DECON0 trigger base: ${PY_DECON}"
+	fi
 fi
 
 # ------------------------------------------------- console font (issue #4)

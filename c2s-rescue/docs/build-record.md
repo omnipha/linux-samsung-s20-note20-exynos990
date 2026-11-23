@@ -673,3 +673,98 @@ delivers messages, not that dropbear starts or that SSH accepts the key
 (`/init` still requires at least one USB network interface for
 dropbear - with only the ACM console there is nothing to bind to).
 Those remain hardware questions for the coordinator.
+
+## Issue #4: DECON refresh trigger after the M1/M2 band paints (combined candidate)
+
+### What changed
+`arch/arm64/kernel/head.S` gains a `c2s_decon_refresh id` macro
+(guarded by `CONFIG_C2S_DIAG`, used at two call sites) implementing
+lk3rd's `decon_show_buffer_update()` refresh sequence
+(`platform/exynos9830/dpu/decon_core.c:114-134`) with the registers
+documented in `c2s-rescue/docs/diag-milestones.md`: all-win shadow
+update request, direct-on, global update request, run-status poll,
+`HW_SW_TRIG_CONTROL` masked enable (unmask + arm), update-done poll,
+masked disable (restore to the sboot `0x3070` handoff state).
+`arch/arm64/kernel/pi/map_range.c` gains a fourth `CONFIG_C2S_DIAG`
+entry in `create_init_idmap()` that identity-maps the DECON0 SFR page
+`0x19050000` with `PROT_DEVICE_nGnRE` so the M2 call site can reach it
+while TTBR0 still holds the initial ID map. `c2s-rescue/scripts/verify.sh`
+gains a mode-aware DECON-trigger gate (instruction-level MOVZ scan for
+`0x19050000`, `>= 2` hits in a diag build, `0` in a baseline build).
+
+### What the evidence does and does not show
+
+The gate is **instruction-level** on the built Image, not source-level:
+it counts `movz xN, #0x1905, lsl #16` occurrences in the linked Image
+(diag build: `count >= 2`, baseline build: `count == 0`). That count
+alone does **not** prove that the two occurrences are the M1 and M2
+call sites — it cannot tell where in the Image they are. Per-call-site
+evidence comes from the `vmlinux` disassembly (see the address-by-address
+listing in `diag-milestones.md`): the M1 block in `primary_entry` at
+`ffff8000806cc158` and the M2 block in `__primary_switched` at
+`ffff8000806e85a4`. The gate proves the Image is not silently
+deconfig'd or stripped; the disassembly proves the call sites.
+Neither proves the DECON or the panel accept the writes; a panel update
+is hardware evidence only.
+
+Two M2-specific concerns were source-proven rather than assumed:
+MAIR_EL1 index 4 is programmed unconditionally by `__cpu_setup` before
+the MMU is turned on, and `init_kernel_el` always drops to EL1 before
+M2 (so `mair_el1`, not `mair_el2`, is in play; `finalise_el2`/VHE runs
+after M2). `remap_idmap_for_lpa2()` would normally rebuild the ID map
+into `init_pg_dir` (sized without the diag extras) when
+`CONFIG_ARM64_LPA2=y` + `VA_BITS=52`. That rebuild is gated on
+`cpu_has_lpa2()` (cpufeature.h:1063-1075), which reads
+`ID_AA64MMFR0_EL1.TGRAN_*`; the Exynos990 cores are Cortex-A76 +
+Cortex-A55 (`exynos990.dtsi:74-109`), i.e. Armv8.2-A parts, and
+FEAT_LPA2 is an Armv8.7-A feature — so the host *expects* the branch
+to be skipped, but only the SoC's ID registers can confirm it.
+
+### Artifacts of this build (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag3, signed) | `/tmp/opencode/c2s-diag3-out/boot.img` | 61 865 984 | `63421d0402a4cfbae7fde455344c1d8a0f4167ddb54560affead94fc44d40991` |
+| Image (diag3) | `/tmp/opencode/c2s-diag3-out/kbuild/arch/arm64/boot/Image` | 11 891 200 | `e096ecfe98ac8923e271ae0626a191819ac76fe2d004dfcf14a71cd647e2f8ad` |
+| DTB (diag3) | `/tmp/opencode/c2s-diag3-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 867 | `43424d49fc43e92ef00cff558058a3edb232592ab3bd89e6f4262b449fb122f2` |
+| boot.img (baseline) | `/tmp/opencode/c2s-diag3-base-out/boot.img` | 61 865 984 | `abcd8fdc0e0af01b5d2ba59670106f8a6e4bf2e2bc1ebef1a907194bac49c7c0` |
+
+### Verification
+
+* `verify.sh /tmp/opencode/c2s-diag3-out`: **173 passed, 0 failed** (the
+  added DECON gate is green, `count=3`; that is the global Image count
+  — two of them are the M1/M2 call sites, the third is the `map_range`
+  device-map constant — per-site locations come from the disassembly
+  above).
+* `verify.sh /tmp/opencode/c2s-diag3-base-out`: **173 passed, 0 failed**
+  (baseline mode green, `count=0`).
+* 9-overlay merge gate: re-checked manually after the diag3 build -
+  live `usb@0` still `dr_mode="peripheral"` with no `maximum-speed`,
+  PHY both supplies present, inert shell `usb@10E00000` keeps
+  `status="okay"` and `samsung,exynos-dwusb` compatible (no driver match).
+* authorized_keys: packaged cpio checked against
+  `~/.ssh/id_ed25519.pub` fingerprint (`SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE`),
+  mode 0600.
+* Source diff vs the USB-only baseline `eaa841ac` (commit `f732bf00034a`,
+  `c2s_rescue_defconfig`): only the marker code (`8c410514`) and the
+  new trigger + verify gate are added. The DTB bytes are byte-identical
+  between `eaa841ac`, `8c410514` and this candidate (`43424d49…`, same
+  USB fix content); the Image now carries the four diagnostic immediates
+  (`0xf100`, `0xf980`, `0xfac0`, `0x1905`) under `CONFIG_C2S_DIAG`, none
+  of which are present in `eaa841ac`'s Image.
+
+### What is still NOT proven
+
+* Whether DECON/panel accept the writes (panel update needs a hardware
+  run; a blank panel on a device with a hung DECON cannot be
+  distinguished from "DECON never saw the writes").
+* Whether the DECON registers are in the same state after the bounded
+  polls as before (each call site ends with the masked disable that
+  restores sboot's handoff value for bits 0/4 and preserves 5/6/12/13,
+  but the intermediate enable/disable writes are unverified on
+  hardware).
+* pstore/ramoops: explicitly NOT implemented; that channel's survival
+  and TWRP readout are unproven from sources (see `evidence.md`).
+* The `earlier` USB-only image `eaa841ac` hangs at boot with zero USB
+  signals for 200s - unexplained, coordinator-owned, not part of this
+  commit's scope; this candidate does not attempt to fix it.

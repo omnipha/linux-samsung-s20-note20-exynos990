@@ -213,3 +213,193 @@ linear map (`__va()`) does not exist yet (it is built in
 
 M3 and the display-independent trace region are still open (see plan);
 this candidate does not implement them.
+
+## Candidate 3 (turn 2026-11-23): DECON refresh trigger
+
+Candidate 2 paints the M2 band but never pushes it to the panel: sboot
+writes `writel(0x3070, 0x19050070)` (`lk3rd app/exynos_boot/boot/
+cmd_boot.c:730-731`) right before `kernel_entry`, which sets bit 4 of
+`HW_SW_TRIG_CONTROL` (`HW_TRIG_MASK_DECON`,
+`platform/exynos9830/include/dpu/cal/regs-decon.h:190`) plus the slave
+mask bits and the trigger edge/value (bits 5, 6, 12, 13), and clears
+bit 0 (`HW_TRIG_EN`, `regs-decon.h:193`). So the panel is masked from
+DECON at handoff. Without an unmasking refresh sequence, plain writes
+to the framebuffer never reach the display, no matter how correct the
+colour or geometry is.
+
+### Register evidence (lk3rd, exynos9830 platform, target/c2s)
+
+| register | offset | bits used | file:line |
+|---|---|---|---|
+| `DECON0_BASE_ADDR` | `0x19050000` | - | `platform/exynos9830/include/dpu/display_sfr.h:40` (c2s uses `PLATFORM := exynos9830`, `target/c2s/rules.mk:4`) |
+| `GLOBAL_CONTROL` | `0x0000` | `DECON_EN (1<<1)`, `DECON_EN_F (1<<0)`, `RUN_STATUS (1<<4)`, **`SRESET (1<<28)` must never be written** | `regs-decon.h:103-116` |
+| `SHADOW_REG_UPDATE_REQ` | `0x0060` | `GLOBAL (1<<31)`, `FOR_DECON (0x3f)` | `regs-decon.h:168-172` |
+| `HW_SW_TRIG_CONTROL` | `0x0070` | `HW_TRIG_EN (1<<0)`, `HW_TRIG_MASK_DECON (1<<4)`, `HW_TRIG_MASK_SLAVE0 (1<<5)`, `HW_TRIG_MASK_SLAVE1 (1<<6)`, `HW_TRIG_EDGE_POLARITY (1<<12)`, `HW_TRIG_ACTIVE_VALUE (1<<13)` | `regs-decon.h:177-193` |
+
+Vendor refresh function (`decon_show_buffer_update`,
+`platform/exynos9830/dpu/decon_core.c:114-134`) mirrors this sequence:
+
+1. `decon_reg_all_win_shadow_update_req` (`cal/decon_reg.c:1923-1930`):
+   mask `0x3f`, val `~0` → `SHADOW_REG_UPDATE_REQ |= 0x3f`
+2. `decon_reg_direct_on_off(1)` (`cal/decon_reg.c:61`): mask
+   `DECON_EN|DECON_EN_F`, val `~0` → `GLOBAL_CONTROL |= 0x3`
+3. `decon_reg_update_req_global` (`cal/decon_reg.c:1775`):
+   mask `GLOBAL (1<<31)`, val `~0` → `SHADOW_REG_UPDATE_REQ |= 1<<31`
+4. `decon_reg_wait_run_status_timeout (20ms)`: poll `RUN_STATUS`
+5. `decon_reg_set_trigger(ENABLE)` when `psr_mode == DECON_MIPI_COMMAND_MODE`
+   (`cal/decon_reg.c:1970-1989`): mask `HW_TRIG_EN|HW_TRIG_MASK_DECON`,
+   val `HW_TRIG_EN` → clear `HW_TRIG_MASK_DECON`, set `HW_TRIG_EN`
+6. `decon_reg_wait_update_done_timeout (SHADOW_UPDATE_TIMEOUT=300ms,
+   decon.h:79)` (`cal/decon_reg.c:1998-2012`): poll
+   `SHADOW_REG_UPDATE_REQ == 0`
+7. `decon_reg_set_trigger(DISABLE)`: mask `HW_TRIG_EN|HW_TRIG_MASK_DECON`,
+   val `HW_TRIG_MASK_DECON` → restore `HW_SW_TRIG_CONTROL` to the
+   masked state matching sboot's `0x3070` handoff.
+
+`decon_write_mask` (`include/dpu/decon.h:476-482`):
+`val = (val & mask) | (old & ~mask)` — a masked RMW. The head.S
+implementation reproduces that exactly: every write to `GLOBAL_CONTROL`
+and `HW_SW_TRIG_CONTROL` uses the same masks the vendor's own refresh
+uses, so bits outside those masks are written back with the value the
+preceding read returned, not with a value we picked. That is *not* a
+proof that `GLOBAL_CONTROL` bit 28 (SRESET, write-1-to-reset) never
+receives a 1 from us: vendor evidence (`cal/decon_reg.c:30-46`,
+`decon_reg_reset()`) deliberately *does* write bit 28 as 1
+(`write_mask(..., ~0, SRESET)`, line 33) and polls for it to self-clear
+(lines 34-38), and `decon_reg_direct_on_off()` (lines 61-67) uses mask
+`0x3` exactly as we do — so both it and our macro write back whatever
+the hardware reported for bit 28. At this point in the boot we do not
+verify that value; it is normally 0 because vendor's own `decon_reg_
+reset()` waited for self-clear before handing off to the kernel, but
+that is an assumption about the running sboot/lk3rd sequence, not a
+host-measured fact. c2s has `psr_mode = 2` (MIPI command) and
+`trig_mode = 0` (hw trigger), so branch (2)/`DECON_SW_TRIG` is not
+taken.
+
+### Implementation
+
+* **head.S**: `c2s_decon_refresh id` macro (immediately before
+  `SYM_CODE_START(primary_entry)`) implementing steps 1-7 with only
+  `x4..x6`; the arch timer is disabled before `kernel_entry`
+  (  `cmd_boot.c:732-734`), so the two waits are bounded iteration
+  counters (`0x4000` each). The bound prevents the *loop* from spinning
+  forever when DECON's RUN_STATUS never sets or SHADOW_REG_UPDATE_REQ
+  never clears; it does not make a DECON MMIO read safe — a read from
+  `0x19050000` that hangs the bus, or that raises an external abort
+  (e.g. if TZSASC blocks the non-secure world), stops the CPU
+  regardless of any counter. On loop timeout the sequence simply falls
+  through. Invoked once after the
+  M1 band and `dsb sy` (MMU off → plain physical device access) and
+  once after the M2 band + `dc civac` flush loops (MMU on → device
+  map below).
+* **map_range.c**: `create_init_idmap()` gained a fourth `CONFIG_C2S_DIAG`
+  entry, `map_range(&ptep, 0x19050000, 0x19051000, 0x19050000, dev_prot,
+  ...)` with `dev_prot = __pgprot(PROT_DEVICE_nGnRE) & ~clrmask`. The
+  prot's `PTE_WRITE` bit survives the `clrmask = PTE_SHARED` applied by
+  both callers, so M2's DECON SFR stores are writable.
+* **kernel-pgtable.h**: `EARLY_IDMAP_DIAG_EXTRA_PAGES = 32` is unchanged
+  (still comfortably above the ~6 tables the three FB ranges + DECON
+  actually cost, measured against `map_range`'s recursion at the real
+  CONFIG_PGTABLE_LEVELS=5 / 4K-page geometry).
+
+### M2 safety analysis (this is the part that used to be open)
+
+* MAIR_EL1 index 4 = `MAIR_ATTR_DEVICE_nGnRE` is programmed
+  unconditionally by `__cpu_setup` (`arch/arm64/mm/proc.S:539`,
+  `MAIR_EL1_SET` at proc.S:74-79) *before* `__enable_mmu`, which is
+  reached only via `b __primary_switch`. So at M2, index 4 = nGnRE is
+  already live in the register that VMSA actually reads.
+* At M2 the active EL is always **EL1**: `init_kernel_el` sets
+  `spsr_el2 = INIT_PSTATE_EL1` and erets to EL1 (head.S:487-490), and
+  `finalise_el2` (VHE, `head.S:404`) runs *after* the M2 paint inside
+  `__primary_switched`. So `mair_el1` is the register in play at M2,
+  not `mair_el2`. (This is the specific concern from the milestone
+  notes; it is now source-proven, not assumed.)
+* `CONFIG_ARM64_LPA2=y` + `CONFIG_ARM64_VA_BITS=52` in the c2s defconfig
+  would normally force the idmap to be rebuilt into `init_pg_dir`
+  (via `remap_idmap_for_lpa2()` in map_kernel.c:165-198) — that pool
+  is sized by `INIT_DIR_SIZE`, which does not include the diag extras.
+  That rebuild is gated on `cpu_has_lpa2()` (cpufeature.h:1063-1075),
+  which reads `ID_AA64MMFR0_EL1.TGRAN_*`; `early_map_kernel`
+  (map_kernel.c:260-263) downgrades `va_bits` to `VA_BITS_MIN` and
+  skips the rebuild when it reports false. The Exynos990 CPU cores are
+  Cortex-A76 + Cortex-A55 (`arm,cortex-a76`/`arm,cortex-a55` in
+  exynos990.dtsi:74-109) — Armv8.2-A parts; FEAT_LPA2 was introduced
+  in Armv8.7-A, so these cores do not implement it and the host can
+  *expect* `cpu_has_lpa2()` to return false. Note this is still not a
+  host measurement (only the SoC's ID registers can answer it) — the
+  documented architecture of the CPU cores is the basis, and the
+  claim is deliberately weaker than "proved": if a future part with
+  LPA2 ran this Image, the fallback in map_kernel.c:260-263 would
+  instead rebuild the idmap into `init_pg_dir`, which is sized without
+  the diag extras.
+* `map_kernel()` only writes TTBR1 (`idmap_cpu_replace_ttbr1`,
+  map_kernel.c:99); `early_map_kernel` never touches TTBR0 on the
+  non-LPA2 path. So the C2S idmap entries (FB + DECON) are still the
+  ones TTBR0 points at when `__primary_switched` runs.
+
+### Artefacts (candidate 3, combined build: markers + trigger + committed USB fixes)
+
+| Artefact | Pfad | Größe (B) | sha256 |
+|---|---|---|---|
+| boot.img (signed, candidate 3) | `/tmp/opencode/c2s-diag3-out/boot.img` | 61 865 984 | `63421d0402a4cfbae7fde455344c1d8a0f4167ddb54560affead94fc44d40991` |
+| Image (diag3) | `/tmp/opencode/c2s-diag3-out/kbuild/arch/arm64/boot/Image` | 11 891 200 | `e096ecfe98ac8923e271ae0626a191819ac76fe2d004dfcf14a71cd647e2f8ad` |
+| DTB (diag3, with committed USB fixes) | `/tmp/opencode/c2s-diag3-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 867 | `43424d49fc43e92ef00cff558058a3edb232592ab3bd89e6f4262b449fb122f2` |
+| baseline (no markers/trigger) boot.img | `/tmp/opencode/c2s-diag3-base-out/boot.img` | 61 865 984 | `abcd8fdc0e0af01b5d2ba59670106f8a6e4bf2e2bc1ebef1a907194bac49c7c0` |
+
+* `CONFIG_C2S_DIAG=y` in `/tmp/opencode/c2s-diag3-out/kbuild/.config`.
+* Disassembly of `/tmp/opencode/c2s-diag3-out/kbuild/vmlinux`:
+  `primary_entry` contains `mov x4, #0x19050000` at
+  `ffff8000806cc158` followed by `ldr/str [x4, #96]` (SHADOW_REG_UPDATE_REQ
+  @ 0x60), `ldr/str [x4]` (GLOBAL_CONTROL @ 0x00, ORR with `#0x3` — this
+  mask leaves bit 28 equal to whatever the preceding read returned, see
+  the SRESET note above; it is *not* an instruction that writes 0 to
+  bit 28), `tbnz w5, #4` (RUN_STATUS poll) and
+  `ldr/str [x4, #112]` (HW_SW_TRIG_CONTROL @ 0x70, `and w5, w5, #0xffffffef`
+  then `orr w5, w5, #0x1` for the enable step and the inverse for the
+  disable step). The same block appears in `__primary_switched`
+  (`ffff8000806e84ac`) at `ffff8000806e85a4`. `map_range.o` carries the
+  `0x19050000` constant for the device mapping.
+  This address-by-address disassembly is the direct evidence that the
+  trigger is present in **both individual call sites** (M1 in
+  `primary_entry`, M2 in `__primary_switched`).
+* **verify.sh**: 173 passed / 0 failed on the diag3 candidate **and** on
+  the paired baseline. The added DECON gate is an instruction-level
+  MOVZ scan for `0x1905` (`movz xN, #0x1905, lsl #16`): diag mode
+  requires `count >= 2` and baseline mode requires `count == 0`. The
+  gate only counts occurrences in the Image and cannot tell *where*
+  they are, so it does NOT prove the two call sites individually;
+  per-call-site verification comes from the vmlinux disassembly above.
+* **9-overlay merge gate** (fdtoverlay of stock overlay0..8 on the
+  built DTB): still passes with the same shape as the candidate-2 gate
+  - live `/soc@0/usb@10e00000/usb@0` `dr_mode = "peripheral"`, no
+    `maximum-speed`, status `okay`; live PHY: both `vbus-supply` and
+    `vbus-boost-supply` present (phandle `0x11` = `reg_dummy`); the
+    inert shell `/usb@10E00000` keeps `status = "okay"` but has
+    `compatible = "samsung,exynos-dwusb"`, which matches no driver
+    (and is not in `of_platform_default_populate`'s match table, see
+    `drivers/of/platform.c:371-377`), so the shell children are never
+    instantiated; the shell dwc3 on `0x10e00000` is not probed.
+* **authorized_keys**: `verify.sh` reads the packaged cpio, confirms
+  the fingerprint matches `~/.ssh/id_ed25519.pub`
+  (`SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE`), mode 0600.
+
+### What this candidate is and is not
+
+* **is**: an Image whose `primary_entry` and `__primary_switched`
+  paint their bands *and* invoke a DECON command-mode refresh whose
+  every write is a source-verified masked RMW. If the kernel really
+  entered and DECON/panel are still healthy, the bands should now
+  actually reach the panel; if the panel remains blank, the failure
+  is either upstream of `primary_entry` or the display path itself
+  (DPU powered down, panel off, MIPI link dead, ...) — a *different*
+  failure class than the pure "we painted DRAM but never refreshed"
+  that candidates 1 and 2 could not distinguish from.
+* **is not**: proof of any specific on-panel pixel. Only a hardware
+  run with the operator's camera on the display can show that. The
+  bounded polls (16384 iterations each) mean a hung DECON does not
+  hang the boot; but a hung DECON also means no visible band.
+* **is not**: pstore/ramoops. That channel is deliberately out of
+  this candidate (see `evidence.md` and `boot-and-open-points.md`).
+
+M3 and the display-independent trace region remain open.

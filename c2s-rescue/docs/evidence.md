@@ -336,3 +336,145 @@ not provide SSH. Host-only remediation (no device access):
 
 Not proven (hardware only): boot, USB enumeration, ttyGS console
 delivery, dropbear startup, and a successful SSH login with this key.
+
+## Issue #4 DECON refresh trigger (combined candidate `63421d04…`)
+
+Host-only evidence class for the new trigger + marker code, built with
+`C2S_DEFCONFIG=c2s_rescue_diag_defconfig` on top of the committed USB
+fixes (`8b45338c198d`) and the marker code already in `8c410514`.
+
+### Source evidence (register semantics)
+
+* `DECON0_BASE_ADDR = 0x19050000` (`platform/exynos9830/include/dpu/
+  display_sfr.h:40`); c2s targets the exynos9830 platform (`target/c2s/
+  rules.mk:4`). The DT of this kernel tree has no `decon` node at that
+  address (the driver is out-of-tree in lk3rd), so the base was taken
+  from the bootloader's own header, not from a guessed DT value.
+* Full refresh sequence source-verified against
+  `platform/exynos9830/dpu/decon_core.c:114-134` (`decon_show_buffer_update`)
+  + the functions it calls, with the exact offsets/bits listed in
+  `diag-milestones.md` and reproduced by the new `c2s_decon_refresh`
+  macro in head.S.
+* Masked-RMW semantics from `platform/exynos9830/include/dpu/decon.h:476-482`
+  (`decon_write_mask`).
+* sboot handoff value: `writel(0x3070, 0x19050070)` (`app/exynos_boot/
+  boot/cmd_boot.c:730-731`) — decoded as bits 4/5/6 + 12/13 set, bit 0
+  clear. Explains the masking, and the trigger's restore step matches.
+* Bounded polls chosen (16384 iterations each): the arch timer is
+  disabled before `kernel_entry` (`cmd_boot.c:732-734`) so a wall-clock
+  timeout cannot be built from `udelay()`; iteration-bounded loops are
+  the only usable primitive in that window. They are *not* a proven
+  equivalent of the vendor's timing (vendor: 300 ms shadow-update
+  timeout, 20 ms run-status poll, `udelay(10)` steps,
+  `include/dpu/decon.h:79`): the host cannot measure the boot-time CPU
+  frequency or the number of MMIO reads that fit into the vendor's
+  deadlines, so no wall-clock equivalence is claimed — the counters are
+  an arbitrary upper bound chosen to keep the boot deterministic, and
+  a too-small counter can only cause the sequence to fall through
+  early.
+* Bounded polling bounds the *loop* only. It does not protect against
+  an MMIO read from `0x19050000` that hangs the bus or raises an
+  external abort (e.g. a TZSASC/secure-access refusal in the
+  non-secure world): such an access stops the CPU regardless of any
+  counter, and no code in this patch can prevent it.
+
+### M2 MMU/MAIR analysis (source-proven, not measured on hardware)
+
+* `MAIR_EL1_SET` (`arch/arm64/mm/proc.S:74-79`) programs index 4 to
+  `MT_DEVICE_nGnRE` (`asm/memory.h:175`); `msr mair_el1` in `__cpu_setup`
+  is unconditional (proc.S:539) and happens in `primary_entry` before
+  `b __primary_switch` -> `__enable_mmu` -> `__primary_switched`. So at
+  M2 the attribute index 4 that `PROT_DEVICE_nGnRE` uses is already
+  programmed.
+* M2 runs at **EL1**: `init_kernel_el` sets `spsr = INIT_PSTATE_EL1` and
+  erets to EL1 in both EL1 and EL2 entry cases (`init_el1` at head.S:533,
+  `init_el2` at head.S:544, both erets at head.S:542/588), and
+  `finalise_el2` runs *after* the M2 block (head.S:502). Therefore
+  `mair_el1` is the register that is in effect at M2 (not `mair_el2`),
+  regardless of whether we entered at EL1 or EL2.
+* `create_init_idmap()` is called once from head.S:164 into
+  `__pi_init_idmap_pg_dir` and stays in TTBR0 through M2 because:
+  - `map_kernel()` (early_map_kernel -> map_kernel) only installs
+    TTBR1 (`idmap_cpu_replace_ttbr1`);
+  - `remap_idmap_for_lpa2()` (the only TTBR0 swapper in `early_map_kernel`)
+    fires only when `va_bits > VA_BITS_MIN`, i.e. only when
+    `cpu_has_lpa2()` (cpufeature.h:1063-1075, reading
+    `ID_AA64MMFR0_EL1.TGRAN_*`) reports support. The Exynos990 cores are
+    Cortex-A76 + Cortex-A55 (`arm,cortex-a76`/`arm,cortex-a55`,
+    exynos990.dtsi:74-109) — Armv8.2-A parts; FEAT_LPA2 arrived in
+    Armv8.7-A, so these cores do not implement it and the host expects
+    the branch to be skipped. The host cannot measure the ID-register
+    read, so this is recorded as an *architectural* expectation, not a
+    host observation. If the branch were taken, the
+    `init_pg_dir` pool (sized by `INIT_DIR_SIZE`, which does not
+    include the diag extras) would be at risk; the same code then calls
+    `create_init_idmap` a second time (map_kernel.c:190), so the C2S
+    entries including DECON would still be present in the rebuilt ID
+    map that ends up in TTBR0.
+* The DECON entry uses `dev_prot = __pgprot(PROT_DEVICE_nGnRE) &
+  ~clrmask` (`clrmask = PTE_SHARED` from both callers). `PTE_WRITE`
+  (bit 51) is distinct from `PTE_SHARED` (bits 8/9), so the mapping
+  keeps the M2 writes permitted.
+* Page-table budget: measured against a faithful model of the real
+  `map_range()` recursion at this config's geometry (level spans
+  39/30/21/12 bits, root level 0) - the three FB ranges cost 4 tables,
+  the DECON page costs 2, total 6 on top of the kernel-image mapping
+  (which the reserve already covers). `EARLY_IDMAP_DIAG_EXTRA_PAGES = 32`
+  is unchanged and comfortably above that.
+
+### Image/verify evidence
+
+* `verify.sh /tmp/opencode/c2s-diag3-out`: **173 passed, 0 failed** on
+  the combined candidate, including a new **instruction-level** DECON
+  gate that requires `movz xN, #0x1905, lsl #16` in `>= 2` places
+  (observed count: 3 — the M1 and M2 call sites plus the `map_range`
+  device-map constant). The gate counts occurrences globally and
+  cannot localise them; the per-call-site evidence is the disassembly
+  below.
+* `verify.sh /tmp/opencode/c2s-diag3-base-out`: **173 passed, 0 failed**
+  on the paired baseline; the new gate is mode-aware and reports
+  `count=0` there.
+* Disassembly of `/tmp/opencode/c2s-diag3-out/kbuild/vmlinux`:
+  `primary_entry` block at `ffff8000806cc158` contains
+  `ldr w5, [x4, #96]` / `orr w5, w5, #0x3f` / `str w5, [x4, #96]`
+  (all-win shadow update request), `orr w5, w5, #0x3` on `[x4]`
+  (direct on, mask 0x3 — note that this ORR writes bit 28 back with the
+  value the preceding read returned; it does not force bit 28 to 0,
+  see the SRESET note above), `orr w5, w5, #0x80000000` on `[x4, #96]`
+  (global update request), `tbnz w5, #4` (RUN_STATUS poll),
+  `[x4, #112]` `and w5, w5, #0xffffffef` + `orr w5, w5, #0x1`
+  (enable: clear `HW_TRIG_MASK_DECON`, set `HW_TRIG_EN`), `cbz w5` on
+  `[x4, #96]` (update-done poll), and the inverse pair for the disable
+  (restore `HW_TRIG_MASK_DECON`, clear `HW_TRIG_EN`). The same block
+  repeats in `__primary_switched` at `ffff8000806e85a4` — this
+  address-by-address disassembly is what proves the trigger is present
+  in **both individual call sites**. `map_range.o` carries the
+  `0x19050000` constant for the device mapping.
+* `GLOBAL_CONTROL` bit 28 (SRESET): the vendor's own
+  `decon_reg_direct_on_off()` (`cal/decon_reg.c:61-67`) uses the same
+  mask `0x3` and therefore also writes bit 28 back as read; vendor
+  `decon_reg_reset()` (`cal/decon_reg.c:30-46`) writes bit 28 as 1 on
+  purpose (line 33) and polls for self-clear (lines 34-38). Our macro
+  matches the vendor's masked-RMW semantics, but the value of bit 28 at
+  the time we run is **not verified** by this patch — it is expected to
+  be 0 because vendor's reset waits for the self-clear before handing
+  over, but that is an assumption about the running bootloader, not a
+  host-measured fact.
+
+### Not proven (hardware only)
+
+* Panel visibility of the M1/M2 bands, or of the intermediate state
+  during the trigger. That requires a hardware run with a photo.
+* Whether the DECON SFRs still accept writes from EL1 at this point
+  (TZSASC / ARM SMMU for display, DECON secure-access-control). sboot
+  reaches them from EL3/EL1 as part of the video path; the kernel's
+  non-secure world may or may not. The bounded polls prevent a hang
+  either way.
+* Whether sboot's 0x3070 mask on bits 4/5/6/12/13 is still in effect
+  at M2 or was cleared/rewritten by the display powerdown that lk3rd
+  runs before jumping to the kernel. This is a hardware question;
+  the trigger's design is safe under either assumption (every write
+  is masked and idempotent for the state we care about).
+* That the trigger is *effective*: only "did the band actually appear
+  on the panel" counts as proof. A blank panel after this candidate
+  narrows but does not close the space of causes.
