@@ -478,3 +478,99 @@ fixes (`8b45338c198d`) and the marker code already in `8c410514`.
 * That the trigger is *effective*: only "did the band actually appear
   on the panel" counts as proof. A blank panel after this candidate
   narrows but does not close the space of causes.
+
+## Issue #5: M1b control-flow fix and passwordless sudo (candidate `13cdc38c…`)
+
+### The M1b defect, proved from the disassembly
+
+Candidate 4 (`852e868d…`) placed the M1b green band between the `0:`
+and `1:` labels of `primary_entry`. The MMU-off entry path - the one
+this device takes, because the bootloader disables the MMU before
+jumping to the kernel - executes `b 1f` and therefore jumped over the
+whole block. The green band was compiled in, solid, and **unreachable
+on the device's own path**.
+
+Two independent pieces of evidence:
+
+* **Reachability.** `c2s-rescue/scripts/check-marker-reachability.py`
+  builds a CFG from the disassembly of `primary_entry`, splits it at
+  the `cbnz x19` MMU-state branch and requires each marker to be
+  reachable on both sides. On the pre-fix vmlinux it reports
+  `FAIL: marker M1b-green @ 0xffff8000806cc224 NOT reachable on the
+  MMU-off (cache-off) entry path - the path this device takes`
+  (M1-white passes on both sides). On the fixed build both markers
+  reach on both paths.
+* **Negative control.** The pre-fix objdump listing is committed as a
+  fixture and the checker must reject it
+  (`--expect-unreachable`). If that input ever reported PASS the gate
+  would be insensitive and the regression unguarded.
+
+The fix moves label `1:` to immediately after the `0:` block's
+`blr x2`, before the M1b block. Label numbering was checked first:
+within `primary_entry` the only numeric label references are
+`cbnz x19, 0f` and `b 1f`, and there is no `1b` anywhere in
+`head.S`, so no other reference can be retargeted. The other `1:`/`2:`
+labels live in `record_mmu_state`, `init_kernel_el` and later
+functions, which the move does not touch.
+
+### Passwordless sudo, proved on the host
+
+The image must let the SSH login user run `sudo -n id` without a
+password. The implementation uses sudo-rs 0.2.15 from the
+postmarketOS aarch64 package set, plus musl, libpam, libgcc_s and
+`pam_permit.so`.
+
+* **Native proof of the elevation path** (x86_64 host, the host's own
+  sudo-rs 0.2.13, setuid): with the *exact* candidate `/etc/sudoers`
+  + `/etc/sudoers.d/90-rescue` + `/etc/pam.d/sudo` bind-mounted over
+  the host's, and the caller dropped to a non-root uid,
+  `sudo -n id` returned `uid=0(root) gid=0(root) groups=0(root)`
+  (RC=0). Root was correctly refused at that point
+  ("sudo: I'm sorry root. I'm afraid I can't do that") because it had
+  no rule. The host's `/etc/sudoers` was restored afterwards and
+  `sudo -n id` re-verified working.
+* **Proof of the shipped configuration** (aarch64 sudo-rs under
+  qemu, in a root-owned chroot of the packed rootfs):
+  `sudo -n -l -U rescue` prints
+  `User rescue may run the following commands on <host>:
+      (ALL : ALL) NOPASSWD: ALL`, and `sudo -n id` prints
+  `uid=0(root) gid=0(root) groups=0(root)`.
+* **Negative control**: with the setuid bit cleared and the command run
+  as an unprivileged account inside the same chroot, sudo-rs refuses
+  with `sudo: sudo must be owned by uid 0 and have the setuid bit
+  set`. This control must run as a non-root caller - sudo-rs only
+  enforces the check then - while `chroot()` needs `CAP_SYS_CHROOT`,
+  so the tree is entered by root and the command is then run via
+  `sudo -u`.
+
+The load-bearing implementation facts, all from the source:
+
+* sudo-rs refuses to load a sudo binary that is not owned by uid 0
+  **with** the setuid bit; the archive entry is `104755 0 0`.
+* sudo-rs refuses a sudoers file that is not root-owned mode 0440;
+  both `/etc/sudoers` and `/etc/sudoers.d/90-rescue` are `100440 0 0`.
+* sudo-rs refuses an inactive `@includedir`; the shipped
+  `/etc/sudoers` has an active `@includedir /etc/sudoers.d`.
+* sudo-rs aborts with a PAM error when `/etc/pam.d/sudo` is missing;
+  the image ships one with `pam_permit` on all four stacks.
+* sudo-rs rejects `Defaults !authenticate` as an unknown setting; the
+  shipped file does not contain it.
+* dropbear opens `authorized_keys` with `seteuid()` to the
+  authenticating user (`svr-authpubkey.c`), so a root-owned 0600 file
+  is unreadable for a uid 1000 login. dropbear is therefore started
+  **without** `-D` so each account resolves its own
+  `~/.ssh/authorized_keys`, and `/home/rescue` is owned by uid 1000 so
+  dropbear's `checkpubkeyperms()` path walk accepts it.
+* `sudo -n id` needs `id` on sudo-rs's `secure_path`
+  (`/usr/bin:/bin:/usr/sbin:/sbin`); busybox's `id` applet was not
+  linked into the image and was added.
+
+### Not proven (device only)
+
+* That `sudo -n id` elevates on the device. qemu-user does not
+  emulate setuid elevation, so the non-root elevation path is proven
+  natively on the host and must be confirmed on the device.
+* That the panel shows any of the five bands, that the USB gadget
+  enumerates, and that a key-only SSH login succeeds. These are the
+  issue #5 done-when conditions and need the coordinator's hardware
+  run.

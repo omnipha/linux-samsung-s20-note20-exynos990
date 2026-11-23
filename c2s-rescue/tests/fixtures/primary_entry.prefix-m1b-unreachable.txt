@@ -1,0 +1,168 @@
+# Negative-control fixture for c2s-rescue/scripts/check-marker-reachability.py
+#
+# objdump -d --disassemble=primary_entry of the PRE-FIX diagnostic vmlinux:
+# the diag5 candidate (boot.img 852e868d1e4c3a9d...), whose head.S placed
+# the M1b green band between the '0:' and '1:' labels of primary_entry, so
+# the MMU-off entry path's 'b 1f' jumped over the whole M1b block.  Every
+# byte-level gate passed on that build; the green band could never appear
+# on the device's own entry path.
+#
+# The checker must REJECT this listing: M1b-green is not reachable on the
+# cache-off path.  If it ever reports RESULT: PASS the gate has become
+# insensitive and the regression is no longer guarded.
+
+/tmp/opencode/c2s-diag5-out/kbuild/vmlinux:     Dateiformat elf64-littleaarch64
+
+
+Disassembly of section .head.text:
+
+Disassembly of section .text:
+
+Disassembly of section .rodata.text:
+
+ffff8000806cc0b8 <primary_entry>:
+ffff8000806cc0b8:	d29fffe4 	mov	x4, #0xffff                	// #65535
+ffff8000806cc0bc:	f2bfffe4 	movk	x4, #0xffff, lsl #16
+ffff8000806cc0c0:	f2dfffe4 	movk	x4, #0xffff, lsl #32
+ffff8000806cc0c4:	f2ffffe4 	movk	x4, #0xffff, lsl #48
+ffff8000806cc0c8:	d282d009 	mov	x9, #0x1680                	// #5760
+ffff8000806cc0cc:	d280100a 	mov	x10, #0x80                  	// #128
+ffff8000806cc0d0:	d2be2005 	mov	x5, #0xf1000000            	// #4043309056
+ffff8000806cc0d4:	aa0503e8 	mov	x8, x5
+ffff8000806cc0d8:	aa0a03eb 	mov	x11, x10
+ffff8000806cc0dc:	aa0803e6 	mov	x6, x8
+ffff8000806cc0e0:	d2802d07 	mov	x7, #0x168                 	// #360
+ffff8000806cc0e4:	a88110c4 	stp	x4, x4, [x6], #16
+ffff8000806cc0e8:	f10004e7 	subs	x7, x7, #0x1
+ffff8000806cc0ec:	54ffffc1 	b.ne	ffff8000806cc0e4 <primary_entry+0x2c>  // b.any
+ffff8000806cc0f0:	8b090108 	add	x8, x8, x9
+ffff8000806cc0f4:	f100056b 	subs	x11, x11, #0x1
+ffff8000806cc0f8:	54ffff21 	b.ne	ffff8000806cc0dc <primary_entry+0x24>  // b.any
+ffff8000806cc0fc:	d2bf3005 	mov	x5, #0xf9800000            	// #4185915392
+ffff8000806cc100:	aa0503e8 	mov	x8, x5
+ffff8000806cc104:	aa0a03eb 	mov	x11, x10
+ffff8000806cc108:	aa0803e6 	mov	x6, x8
+ffff8000806cc10c:	d2802d07 	mov	x7, #0x168                 	// #360
+ffff8000806cc110:	a88110c4 	stp	x4, x4, [x6], #16
+ffff8000806cc114:	f10004e7 	subs	x7, x7, #0x1
+ffff8000806cc118:	54ffffc1 	b.ne	ffff8000806cc110 <primary_entry+0x58>  // b.any
+ffff8000806cc11c:	8b090108 	add	x8, x8, x9
+ffff8000806cc120:	f100056b 	subs	x11, x11, #0x1
+ffff8000806cc124:	54ffff21 	b.ne	ffff8000806cc108 <primary_entry+0x50>  // b.any
+ffff8000806cc128:	d2bf5805 	mov	x5, #0xfac00000            	// #4206886912
+ffff8000806cc12c:	aa0503e8 	mov	x8, x5
+ffff8000806cc130:	aa0a03eb 	mov	x11, x10
+ffff8000806cc134:	aa0803e6 	mov	x6, x8
+ffff8000806cc138:	d2802d07 	mov	x7, #0x168                 	// #360
+ffff8000806cc13c:	a88110c4 	stp	x4, x4, [x6], #16
+ffff8000806cc140:	f10004e7 	subs	x7, x7, #0x1
+ffff8000806cc144:	54ffffc1 	b.ne	ffff8000806cc13c <primary_entry+0x84>  // b.any
+ffff8000806cc148:	8b090108 	add	x8, x8, x9
+ffff8000806cc14c:	f100056b 	subs	x11, x11, #0x1
+ffff8000806cc150:	54ffff21 	b.ne	ffff8000806cc134 <primary_entry+0x7c>  // b.any
+ffff8000806cc154:	d5033f9f 	dsb	sy
+ffff8000806cc158:	d2a320a4 	mov	x4, #0x19050000            	// #419758080
+ffff8000806cc15c:	b9406085 	ldr	w5, [x4, #96]
+ffff8000806cc160:	320014a5 	orr	w5, w5, #0x3f
+ffff8000806cc164:	b9006085 	str	w5, [x4, #96]
+ffff8000806cc168:	b9400085 	ldr	w5, [x4]
+ffff8000806cc16c:	320004a5 	orr	w5, w5, #0x3
+ffff8000806cc170:	b9000085 	str	w5, [x4]
+ffff8000806cc174:	b9406085 	ldr	w5, [x4, #96]
+ffff8000806cc178:	320100a5 	orr	w5, w5, #0x80000000
+ffff8000806cc17c:	b9006085 	str	w5, [x4, #96]
+ffff8000806cc180:	d2880006 	mov	x6, #0x4000                	// #16384
+ffff8000806cc184:	b9400085 	ldr	w5, [x4]
+ffff8000806cc188:	37200065 	tbnz	w5, #4, ffff8000806cc194 <primary_entry+0xdc>
+ffff8000806cc18c:	f10004c6 	subs	x6, x6, #0x1
+ffff8000806cc190:	54ffffa1 	b.ne	ffff8000806cc184 <primary_entry+0xcc>  // b.any
+ffff8000806cc194:	b9407085 	ldr	w5, [x4, #112]
+ffff8000806cc198:	121b78a5 	and	w5, w5, #0xffffffef
+ffff8000806cc19c:	320000a5 	orr	w5, w5, #0x1
+ffff8000806cc1a0:	b9007085 	str	w5, [x4, #112]
+ffff8000806cc1a4:	d2880006 	mov	x6, #0x4000                	// #16384
+ffff8000806cc1a8:	b9406085 	ldr	w5, [x4, #96]
+ffff8000806cc1ac:	34000065 	cbz	w5, ffff8000806cc1b8 <primary_entry+0x100>
+ffff8000806cc1b0:	f10004c6 	subs	x6, x6, #0x1
+ffff8000806cc1b4:	54ffffa1 	b.ne	ffff8000806cc1a8 <primary_entry+0xf0>  // b.any
+ffff8000806cc1b8:	b9407085 	ldr	w5, [x4, #112]
+ffff8000806cc1bc:	121f78a5 	and	w5, w5, #0xfffffffe
+ffff8000806cc1c0:	321c00a5 	orr	w5, w5, #0x10
+ffff8000806cc1c4:	b9007085 	str	w5, [x4, #112]
+ffff8000806cc1c8:	d5033f9f 	dsb	sy
+ffff8000806cc1cc:	94007097 	bl	ffff8000806e8428 <record_mmu_state>
+ffff8000806cc1d0:	940070ab 	bl	ffff8000806e847c <preserve_boot_args>
+ffff8000806cc1d4:	90002841 	adrp	x1, ffff800080bd4000 <early_init_stack>
+ffff8000806cc1d8:	9100003f 	mov	sp, x1
+ffff8000806cc1dc:	aa1f03fd 	mov	x29, xzr
+ffff8000806cc1e0:	900003a0 	adrp	x0, ffff800080740000 <__initdata_begin>
+ffff8000806cc1e4:	aa1f03e1 	mov	x1, xzr
+ffff8000806cc1e8:	940067c9 	bl	ffff8000806e610c <__pi_create_init_idmap>
+ffff8000806cc1ec:	b5000113 	cbnz	x19, ffff8000806cc20c <primary_entry+0x154>
+ffff8000806cc1f0:	d5033fbf 	dmb	sy
+ffff8000806cc1f4:	aa0003e1 	mov	x1, x0
+ffff8000806cc1f8:	900003a0 	adrp	x0, ffff800080740000 <__initdata_begin>
+ffff8000806cc1fc:	f0ffcb42 	adrp	x2, ffff800080037000 <__ptep_set_access_flags_anysz+0x40>
+ffff8000806cc200:	911d5042 	add	x2, x2, #0x754
+ffff8000806cc204:	d63f0040 	blr	x2
+ffff8000806cc208:	14000034 	b	ffff8000806cc2d8 <primary_entry+0x220>
+ffff8000806cc20c:	90000000 	adrp	x0, ffff8000806cc000 <__idmap_text_start>
+ffff8000806cc210:	90000001 	adrp	x1, ffff8000806cc000 <__idmap_text_start>
+ffff8000806cc214:	913be021 	add	x1, x1, #0xef8
+ffff8000806cc218:	f0ffcb42 	adrp	x2, ffff800080037000 <__ptep_set_access_flags_anysz+0x40>
+ffff8000806cc21c:	91200042 	add	x2, x2, #0x800
+ffff8000806cc220:	d63f0040 	blr	x2
+ffff8000806cc224:	d29fe004 	mov	x4, #0xff00                	// #65280
+ffff8000806cc228:	f2bfe004 	movk	x4, #0xff00, lsl #16
+ffff8000806cc22c:	f2dfe004 	movk	x4, #0xff00, lsl #32
+ffff8000806cc230:	f2ffe004 	movk	x4, #0xff00, lsl #48
+ffff8000806cc234:	d282d009 	mov	x9, #0x1680                	// #5760
+ffff8000806cc238:	d280100a 	mov	x10, #0x80                  	// #128
+ffff8000806cc23c:	d2a002cb 	mov	x11, #0x160000              	// #1441792
+ffff8000806cc240:	f290000b 	movk	x11, #0x8000
+ffff8000806cc244:	d2be2005 	mov	x5, #0xf1000000            	// #4043309056
+ffff8000806cc248:	8b0b00a5 	add	x5, x5, x11
+ffff8000806cc24c:	aa0503e8 	mov	x8, x5
+ffff8000806cc250:	aa0a03ec 	mov	x12, x10
+ffff8000806cc254:	aa0803e6 	mov	x6, x8
+ffff8000806cc258:	d2802d07 	mov	x7, #0x168                 	// #360
+ffff8000806cc25c:	a88110c4 	stp	x4, x4, [x6], #16
+ffff8000806cc260:	f10004e7 	subs	x7, x7, #0x1
+ffff8000806cc264:	54ffffc1 	b.ne	ffff8000806cc25c <primary_entry+0x1a4>  // b.any
+ffff8000806cc268:	8b090108 	add	x8, x8, x9
+ffff8000806cc26c:	f100058c 	subs	x12, x12, #0x1
+ffff8000806cc270:	54ffff21 	b.ne	ffff8000806cc254 <primary_entry+0x19c>  // b.any
+ffff8000806cc274:	d2bf3005 	mov	x5, #0xf9800000            	// #4185915392
+ffff8000806cc278:	8b0b00a5 	add	x5, x5, x11
+ffff8000806cc27c:	aa0503e8 	mov	x8, x5
+ffff8000806cc280:	aa0a03ec 	mov	x12, x10
+ffff8000806cc284:	aa0803e6 	mov	x6, x8
+ffff8000806cc288:	d2802d07 	mov	x7, #0x168                 	// #360
+ffff8000806cc28c:	a88110c4 	stp	x4, x4, [x6], #16
+ffff8000806cc290:	f10004e7 	subs	x7, x7, #0x1
+ffff8000806cc294:	54ffffc1 	b.ne	ffff8000806cc28c <primary_entry+0x1d4>  // b.any
+ffff8000806cc298:	8b090108 	add	x8, x8, x9
+ffff8000806cc29c:	f100058c 	subs	x12, x12, #0x1
+ffff8000806cc2a0:	54ffff21 	b.ne	ffff8000806cc284 <primary_entry+0x1cc>  // b.any
+ffff8000806cc2a4:	d2bf5805 	mov	x5, #0xfac00000            	// #4206886912
+ffff8000806cc2a8:	8b0b00a5 	add	x5, x5, x11
+ffff8000806cc2ac:	aa0503e8 	mov	x8, x5
+ffff8000806cc2b0:	aa0a03ec 	mov	x12, x10
+ffff8000806cc2b4:	aa0803e6 	mov	x6, x8
+ffff8000806cc2b8:	d2802d07 	mov	x7, #0x168                 	// #360
+ffff8000806cc2bc:	a88110c4 	stp	x4, x4, [x6], #16
+ffff8000806cc2c0:	f10004e7 	subs	x7, x7, #0x1
+ffff8000806cc2c4:	54ffffc1 	b.ne	ffff8000806cc2bc <primary_entry+0x204>  // b.any
+ffff8000806cc2c8:	8b090108 	add	x8, x8, x9
+ffff8000806cc2cc:	f100058c 	subs	x12, x12, #0x1
+ffff8000806cc2d0:	54ffff21 	b.ne	ffff8000806cc2b4 <primary_entry+0x1fc>  // b.any
+ffff8000806cc2d4:	d5033f9f 	dsb	sy
+ffff8000806cc2d8:	aa1303e0 	mov	x0, x19
+ffff8000806cc2dc:	94000004 	bl	ffff8000806cc2ec <init_kernel_el>
+ffff8000806cc2e0:	aa0003f4 	mov	x20, x0
+ffff8000806cc2e4:	940002b2 	bl	ffff8000806ccdac <__cpu_setup>
+ffff8000806cc2e8:	14000147 	b	ffff8000806cc804 <__primary_switch>
+
+Disassembly of section .init.text:
+
+Disassembly of section .exit.text:

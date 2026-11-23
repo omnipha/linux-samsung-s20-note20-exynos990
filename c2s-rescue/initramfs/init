@@ -89,10 +89,17 @@ CONSOLE_PID=""
 
 start_dropbear() {
     # -R: generate host keys on first start (none are shipped in the image)
-    # -D: directory holding authorized_keys
     # -p: bound to the USB addresses only, never 0.0.0.0
     # -F: stay in the foreground so PID 1 can supervise the process
-    dropbear -R -F -E -b /etc/issue -D /root/.ssh -P /run/dropbear.pid \
+    #
+    # NOTE: no -D here.  dropbear's default authorized_keys directory is
+    # "~/.ssh", expanded per user from /etc/passwd, so each account gets
+    # its own <home>/.ssh/authorized_keys.  A single -D /root/.ssh would
+    # force every login to read root's key file and would make the
+    # unprivileged `rescue` account impossible (dropbear opens
+    # authorized_keys with seteuid() to the authenticating user, so a
+    # root-owned file is unreadable for a non-root login).
+    dropbear -R -F -E -b /etc/issue -P /run/dropbear.pid \
              -p "$RESCUE_NCM_ADDR:$RESCUE_SSH_PORT" \
              -p "$RESCUE_RNDIS_ADDR:$RESCUE_SSH_PORT" \
              >> /run/dropbear.log 2>&1 &
@@ -142,14 +149,29 @@ case "${GADGET_STATUS}" in
     fi
 
     if [ -n "${C2S_NCM_IF}" ] || [ -n "${C2S_RNDIS_IF}" ]; then
+        # Per-user authorized_keys: dropbear resolves "~/.ssh/authorized_keys"
+        # from the /etc/passwd home directory of the account that logs in.
+        # The image ships the operator key for `rescue` (uid 1000) and for
+        # `root`; either one is enough to bring dropbear up.  The directory
+        # mode is fixed here instead of via `dirname`: busybox's dirname
+        # applet is not linked into the initramfs.
+        RESCUE_KEYS=""
+        if [ -s /home/rescue/.ssh/authorized_keys ]; then
+            chmod 0700 /home/rescue/.ssh
+            chmod 0600 /home/rescue/.ssh/authorized_keys
+            RESCUE_KEYS="${RESCUE_KEYS} /home/rescue/.ssh/authorized_keys"
+        fi
         if [ -s /root/.ssh/authorized_keys ]; then
             chmod 0700 /root/.ssh
             chmod 0600 /root/.ssh/authorized_keys
+            RESCUE_KEYS="${RESCUE_KEYS} /root/.ssh/authorized_keys"
+        fi
+        if [ -n "${RESCUE_KEYS}" ]; then
             mkdir -p /etc/dropbear
             start_dropbear
-            log "dropbear up on $RESCUE_NCM_ADDR:$RESCUE_SSH_PORT and $RESCUE_RNDIS_ADDR:$RESCUE_SSH_PORT (pubkey only)"
+            log "dropbear up on $RESCUE_NCM_ADDR:$RESCUE_SSH_PORT and $RESCUE_RNDIS_ADDR:$RESCUE_SSH_PORT (pubkey only); authorized_keys:${RESCUE_KEYS}"
         else
-            log "no /root/.ssh/authorized_keys: dropbear NOT started"
+            log "no authorized_keys for rescue or root: dropbear NOT started"
         fi
     else
         log "no USB network interface: dropbear NOT started (console-only stage)"

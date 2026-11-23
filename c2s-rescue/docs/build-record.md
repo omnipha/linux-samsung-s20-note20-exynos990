@@ -849,3 +849,109 @@ the time of writing.
   this build; `verify.sh` has no sudo gate yet.
 * USB gadget enumeration (issue #5 task 2) is not exercised by this
   build beyond the DT/gadget gates that already passed for diag3.
+
+## Build 6 (turn 2026-11-23): M1b control-flow fix + passwordless sudo
+
+### What changed
+
+* `arch/arm64/kernel/head.S`: label `1:` in `primary_entry` moved to
+  immediately after the `0:` cache-clean block and **before** the M1b
+  block. Previously the MMU-off entry path's `b 1f` jumped over the
+  whole M1b green band, so it could never appear on the device's own
+  entry path even though every byte-level gate passed.
+* `c2s-rescue/scripts/check-marker-reachability.py` (new): CFG
+  reachability checker for the marker ladder. Builds a control-flow
+  graph from the disassembly of a function and requires each marker to
+  be reachable from the entry point; for `primary_entry` it splits
+  reachability at the `cbnz x19` MMU-state branch and requires the
+  marker to be reachable on **both** the cache-off and cache-on path.
+* `c2s-rescue/tests/fixtures/primary_entry.prefix-m1b-unreachable.txt`
+  (new): the committed pre-fix objdump listing that the checker must
+  reject - the gate's own negative control.
+* `c2s-rescue/scripts/cpio-listing.py` (new): parses newc cpio headers
+  and prints numeric mode/uid/gid. `cpio -itv` resolves the uid against
+  the host passwd database, which makes an ownership gate for uid 1000
+  meaningless on a build host whose uid 1000 has a different name.
+* `c2s-rescue/scripts/verify.sh`: new CFG-reachability section (with
+  the fixture negative control), new "passwordless sudo" section
+  (archive ownership/mode/uid gates + content gates + a functional
+  qemu chroot test with a setuid negative control), and a new
+  "packaged boot.img: sudo payload" section that re-proves the whole
+  sudo/sudoers/rescue-account payload inside the **signed** image.
+* `c2s-rescue/initramfs/etc/{passwd,group}`: added the `rescue` account
+  (uid/gid 1000, home `/home/rescue`, shell `/bin/sh`).
+* `c2s-rescue/initramfs/etc/sudoers`,
+  `c2s-rescue/initramfs/etc/sudoers.d/90-rescue`,
+  `c2s-rescue/initramfs/etc/pam.d/sudo` (new): sudo-rs configuration.
+* `c2s-rescue/initramfs/init`: dropbear is started **without** `-D`
+  (per-user `~/.ssh/authorized_keys`); the start condition now accepts
+  the key file of either `rescue` or `root`.
+* `c2s-rescue/scripts/build.sh`: stages sudo-rs + musl + libpam +
+  libgcc_s + pam_permit from the postmarketOS aarch64 `.apk` packages
+  (each SHA-256 verified), installs the operator key for both `root` and
+  `rescue`, adds the `id`/`whoami`/`groups` busybox applets, and
+  emits the new cpio entries with the correct uid/gid/mode.
+
+### Build commands (build host)
+
+```
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag6-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag6-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag6-out
+```
+
+`build.sh` exit 0; `package-bootimg.sh` exit 0; `verify.sh` exit 0
+(**217 passed, 0 failed**; build 5 had 173).
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag6, signed) | `/tmp/opencode/c2s-diag6-out/boot.img` | 61 865 984 | `13cdc38ca0725706d7367ef9fcd023e1ce5bdd034f8436720da67e9688c49243` |
+| Image (diag6) | `/tmp/opencode/c2s-diag6-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `909d03e1c971302f9b805384d2ac97f958add003a85d9029417c1b50f952eb9a` |
+| DTB | `/tmp/opencode/c2s-diag6-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 867 | `43424d49fc43e92ef00cff558058a3edb232592ab3bd89e6f4262b449fb122f2` |
+| initramfs | `/tmp/opencode/c2s-diag6-out/work/initramfs.cpio.gz` | 3 367 458 | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
+
+The Image grew by 917 504 B and the initramfs by 870 774 B against
+build 5; the growth is the sudo-rs runtime (sudo 726 008 B + musl
+723 480 B + libpam 67 472 B + pam_permit 67 400 B + libgcc_s
+133 008 B). The partition has ample headroom: the payload is ~16.2 MB
+of a 61 865 984 B image.
+
+### Verification highlights
+
+* CFG reachability on `primary_entry`: M1-white **and** M1b-green
+  reachable from the entry and from both MMU-state paths.
+* CFG negative control: the committed pre-fix listing is rejected.
+* Band gate on the kernel payload extracted from the signed `boot.img`:
+  5 markers, all `SOLID`; the payload is byte-identical to
+  `kbuild/.../Image` (`909d03e1…`).
+* Packaged ramdisk: `104755 0 0 f usr/bin/sudo` (setuid root),
+  `100440 0 0 f etc/sudoers`, `100440 0 0 f etc/sudoers.d/90-rescue`,
+  `100644 0 0 f etc/pam.d/sudo`, `100600 1000 1000 f
+  home/rescue/.ssh/authorized_keys`, `100600 0 0 f
+  root/.ssh/authorized_keys`.
+* Functional sudo in a root-owned chroot of the packed rootfs:
+  `sudo -n -l -U rescue` -> `(ALL : ALL) NOPASSWD: ALL`;
+  `sudo -n id` -> `uid=0(root) gid=0(root) groups=0(root)`.
+* sudo negative control: without the setuid bit and with a non-root
+  caller, sudo-rs refuses ("sudo must be owned by uid 0 and have the
+  setuid bit set").
+* AVB: `avbtool verify_image` OK, algorithm `SHA256_RSA4096`, rollback
+  index **13**, Samsung DT table `d7b7ab1e`, FDT 141 867 B == kbuild
+  DTB, wrapper + packed image verified.
+
+### What is still NOT proven
+
+* That the panel shows any of the five bands (hardware only).
+* That the USB gadget enumerates and that SSH with key-only login
+  works on the device (hardware only).
+* That `sudo -n id` elevates on the device: qemu-user does not emulate
+  setuid, so the non-root elevation path is proven natively on the host
+  (x86_64 sudo-rs 0.2.13) and must be confirmed on the device.

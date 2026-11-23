@@ -355,6 +355,70 @@ if [ -x "${VBUILD}" ] || [ -s "${VBUILD}" ]; then
 else
 	note "vmlinux not present in ${KBUILD}; disassembly gate skipped"
 fi
+
+# ------------------------------------------------ CFG-reachability gate
+# Marker *bytes* in the Image prove the code was compiled in; they say
+# nothing about whether the CPU can ever execute it.  The defect this gate
+# exists for (issue #5): primary_entry placed the M1b green band between the
+# `0:` and `1:` labels while the MMU-off entry path - the path this device
+# takes, because the bootloader disables the MMU before jumping to the
+# kernel - executed `b 1f` and jumped over the whole block.  Every byte-level
+# gate still passed, and the green band simply never appeared on the panel.
+#
+# The checker builds a control-flow graph from the *disassembly* and proves
+# each marker reachable from its function's entry point; for primary_entry it
+# additionally splits reachability at the `cbnz x19` MMU-state branch and
+# requires the marker to be reachable on BOTH the cache-off and the cache-on
+# path.  A negative control (the committed pre-fix listing) proves the gate is
+# sensitive: if it ever reports PASS on that input the gate is blind and this
+# regression is no longer guarded.
+CFG_CHECKER="${SCRIPT_DIR}/check-marker-reachability.py"
+CFG_FIXTURE="${RESCUE_DIR}/tests/fixtures/primary_entry.prefix-m1b-unreachable.txt"
+if [ -x "${CFG_CHECKER}" ] || [ -f "${CFG_CHECKER}" ]; then
+	# Negative control first: it must not depend on the current build at all.
+	if [ -s "${CFG_FIXTURE}" ]; then
+		CFG_NEG=$(python3 "${CFG_CHECKER}" --disasm-file "${CFG_FIXTURE}" \
+			--function primary_entry --expect-unreachable 2>&1)
+		if [ $? -eq 0 ] && printf '%s\n' "${CFG_NEG}" | grep -q "gate correctly rejects"; then
+			ok "CFG gate negative control: the pre-fix listing IS rejected (gate is sensitive)"
+		else
+			bad "CFG gate negative control failed: the pre-fix listing was not rejected - the gate is insensitive and cannot guard this regression: $(printf '%s\n' "${CFG_NEG}" | tail -n 2 | tr '\n' ' ')"
+		fi
+	else
+		note "no CFG fixture at ${CFG_FIXTURE}; negative control skipped"
+	fi
+	if [ -x "${VBUILD}" ] || [ -s "${VBUILD}" ]; then
+		if [ "${DIAG_MODE}" = on ]; then
+			# Every marker must be reachable on the entry paths its
+			# function actually takes.  primary_entry is the one with
+			# the two-path split; the other two are single-path.
+			for fn in primary_entry __primary_switch __primary_switched; do
+				CFG_OUT=$(python3 "${CFG_CHECKER}" "${VBUILD}" --function "${fn}" 2>&1)
+				CFG_RC=$?
+				if [ ${CFG_RC} -eq 0 ]; then
+					ok "CFG reachability ${fn}: $(printf '%s\n' "${CFG_OUT}" | grep -E '^PASS: marker' | sed 's/^PASS: //' | tr '\n' '; ')"
+				else
+					bad "CFG reachability ${fn} FAILED: $(printf '%s\n' "${CFG_OUT}" | grep -E '^(FAIL|RESULT)' | tr '\n' ' ')"
+				fi
+			done
+		else
+			# Baseline build: no markers are expected anywhere.
+			for fn in primary_entry __primary_switch __primary_switched; do
+				CFG_OUT=$(python3 "${CFG_CHECKER}" "${VBUILD}" --function "${fn}" --expect-none 2>&1)
+				CFG_RC=$?
+				if [ ${CFG_RC} -eq 0 ]; then
+					ok "CFG reachability ${fn}: no diagnostic markers (baseline build)"
+				else
+					bad "CFG reachability ${fn}: $(printf '%s\n' "${CFG_OUT}" | tail -n 1 | tr '\n' ' ')"
+				fi
+			done
+		fi
+	else
+		note "vmlinux not present in ${KBUILD}; CFG reachability gate skipped"
+	fi
+else
+	note "check-marker-reachability.py not found at ${CFG_CHECKER}; CFG reachability gate skipped"
+fi
 # Marker-semantics reminder (never a pass/fail): compiled-in M1/M2 stores
 # prove kernel entry and DRAM writes only.  Whether anything becomes
 # VISIBLE depends on the DECON command-mode refresh, which this Image now
@@ -526,6 +590,269 @@ check "/etc/passwd has root with /bin/sh" \
 check "/etc/shells contains /bin/sh" \
 	grep -qx "/bin/sh" "${UNPACK}/etc/shells"
 check "/etc/rescue.conf present" test -f "${UNPACK}/etc/rescue.conf"
+
+# ------------------------------------- passwordless sudo (issue #5)
+# The SSH login account is the unprivileged `rescue` (uid 1000); it must be
+# able to run `sudo -n id` with no password.  sudo-rs (not the original
+# sudo) is what ships here, and it is unusually strict: it refuses to load
+# unless /usr/bin/sudo is owned by uid 0 *with* the setuid bit, refuses a
+# sudoers file that is not root-owned mode 0440, refuses an inactive
+# @includedir, and aborts outright when /etc/pam.d/sudo is missing.
+# Every one of those requirements is a hard gate below.
+#
+# Ownership and setuid can only be read from the packed archive: the cpio is
+# extracted as the build user, so the on-disk uid/gid of ${UNPACK} proves
+# nothing.  ${CPIO_LIST} is the authoritative record of the archive's
+# uid/gid/mode.
+section "passwordless sudo (rescue account, issue #5)"
+# Ownership/mode/uid must be read from the archive headers, not from
+# `cpio -itv`: that resolves the uid against the *host* passwd database, so
+# on a build host whose uid 1000 is called "gregor" an entry that must be
+# owned by the rescue account would render as "gregor gregor" and a
+# name-based check would be meaningless.  cpio-listing.py prints the numeric
+# mode/uid/gid parsed straight from the newc headers.
+CPIONUM="${SCRIPT_DIR}/cpio-listing.py"
+CPIONUM_ENTRIES=""
+if [ -f "${CPIONUM}" ]; then
+	CPIONUM_ENTRIES=$(python3 "${CPIONUM}" -z "${INITRAMFS}" 2>/dev/null)
+fi
+# CPIO_ENTRY <path>: the <mode> <uid> <gid> <type> <path> line, or empty.
+# Symlink lines carry a " -> target" suffix, so the path must be matched at
+# the end of a field rather than at the end of the line.
+CPIO_ENTRY() { printf '%s\n' "${CPIONUM_ENTRIES}" | grep -aE "^[0-9]{6} [0-9]+ [0-9]+ [fdlbcps] $1( -> .*)?$" | head -n1; }
+if [ -z "${CPIONUM_ENTRIES}" ]; then
+	bad "could not parse the packed cpio (${CPIONUM}); archive ownership gates skipped"
+fi
+SUDO_ENTRY=$(CPIO_ENTRY "usr/bin/sudo")
+if [ -n "${SUDO_ENTRY}" ]; then
+	ok "archive carries /usr/bin/sudo: ${SUDO_ENTRY}"
+	# 04755: setuid root.  sudo-rs hard-fails without it.
+	if printf '%s\n' "${SUDO_ENTRY}" | grep -qE '^[0-9]*4[0-9]{3} '; then
+		ok "archive /usr/bin/sudo is setuid (04755) - sudo-rs requires this"
+	else
+		bad "archive /usr/bin/sudo is not setuid: ${SUDO_ENTRY}"
+	fi
+	SUDO_UID=$(printf '%s\n' "${SUDO_ENTRY}" | awk '{print $2}')
+	SUDO_GID=$(printf '%s\n' "${SUDO_ENTRY}" | awk '{print $3}')
+	if [ "${SUDO_UID}" = "0" ] && [ "${SUDO_GID}" = "0" ]; then
+		ok "archive /usr/bin/sudo is owned by uid 0 gid 0"
+	else
+		bad "archive /usr/bin/sudo is not owned by root (uid=${SUDO_UID} gid=${SUDO_GID})"
+	fi
+else
+	bad "archive carries no /usr/bin/sudo"
+fi
+for p in "lib/ld-musl-aarch64.so.1" "usr/lib/libpam.so.0" \
+         "usr/lib/libpam.so.0.85.1" "usr/lib/security/pam_permit.so" \
+         "usr/lib/libgcc_s.so.1" "lib/libc.musl-aarch64.so.1"; do
+	if [ -n "$(CPIO_ENTRY "${p}")" ]; then
+		ok "archive carries /${p} (sudo runtime)"
+	else
+		bad "archive is missing /${p} (sudo runtime)"
+	fi
+done
+# sudoers: root-owned 0440 in the archive, or sudo-rs refuses to load it
+SUDOERS_ENTRY=$(CPIO_ENTRY "etc/sudoers")
+if [ -n "${SUDOERS_ENTRY}" ] \
+   && printf '%s\n' "${SUDOERS_ENTRY}" | grep -qE '^100440 0 0 ' ; then
+	ok "archive /etc/sudoers is root-owned 0440: ${SUDOERS_ENTRY}"
+else
+	bad "archive /etc/sudoers missing or not root-owned 0440: ${SUDOERS_ENTRY:-<absent>}"
+fi
+RULE_ENTRY=$(CPIO_ENTRY "etc/sudoers.d/90-rescue")
+if [ -n "${RULE_ENTRY}" ] \
+   && printf '%s\n' "${RULE_ENTRY}" | grep -qE '^100440 0 0 ' ; then
+	ok "archive /etc/sudoers.d/90-rescue is root-owned 0440: ${RULE_ENTRY}"
+else
+	bad "archive /etc/sudoers.d/90-rescue missing or not root-owned 0440: ${RULE_ENTRY:-<absent>}"
+fi
+AK_ENTRY=$(CPIO_ENTRY "home/rescue/.ssh/authorized_keys")
+if [ -n "${AK_ENTRY}" ] \
+   && printf '%s\n' "${AK_ENTRY}" | grep -qE '^100600 1000 1000 ' ; then
+	ok "archive /home/rescue/.ssh/authorized_keys is uid 1000 gid 1000 mode 0600: ${AK_ENTRY}"
+else
+	# Not fatal on its own when C2S_AUTHORIZED_KEYS was not supplied (the
+	# key is then absent for root too), but the uid/gid must still be
+	# right whenever the file is present.
+	if [ -n "${AK_ENTRY}" ]; then
+		bad "archive /home/rescue/.ssh/authorized_keys is not uid/gid 1000 mode 0600: ${AK_ENTRY}"
+	else
+		note "archive has no /home/rescue/.ssh/authorized_keys (no C2S_AUTHORIZED_KEYS at build time)"
+	fi
+fi
+# dropbear's checkpubkeyperms() walks from the key file up to the login
+# user's home directory and requires every component to be owned by that
+# user or by root and not group/other writable.  `/home` is root-owned 0755
+# (acceptable: not writable by group/other), `/home/rescue` and
+# `/home/rescue/.ssh` are owned by uid 1000.
+for p in "home" "home/rescue" "home/rescue/.ssh"; do
+	E=$(CPIO_ENTRY "${p}")
+	if [ -n "${E}" ]; then
+		ok "archive /${p} present for dropbear's path walk: ${E}"
+	else
+		bad "archive /${p} missing (dropbear cannot validate the authorized_keys path)"
+	fi
+done
+# --- content gates on the extracted tree
+check "sudo is an aarch64 ELF with a musl interpreter" \
+	bash -c 'aarch64-linux-gnu-readelf -l "$1" 2>/dev/null | grep -q "program interpreter: /lib/ld-musl-aarch64.so.1"' _ "${UNPACK}/usr/bin/sudo"
+if grep -qE '^[[:space:]]*@includedir[[:space:]]+/etc/sudoers\.d' "${UNPACK}/etc/sudoers"; then
+	ok "/etc/sudoers has an ACTIVE @includedir /etc/sudoers.d (a commented one makes sudo-rs ignore the rescue rule)"
+else
+	bad "/etc/sudoers has no active @includedir /etc/sudoers.d"
+fi
+# `Defaults !authenticate` is rejected by sudo-rs as an unknown setting and
+# would make it refuse to load the file at all.
+if grep -qE '^[[:space:]]*Defaults[[:space:]]+!authenticate' "${UNPACK}/etc/sudoers"; then
+	bad "/etc/sudoers uses 'Defaults !authenticate' - sudo-rs rejects it as an unknown setting"
+else
+	ok "/etc/sudoers carries no sudo-rs-unsupported Defaults"
+fi
+if grep -qE '^[[:space:]]*rescue[[:space:]]+ALL=\(ALL:ALL\)[[:space:]]+NOPASSWD:[[:space:]]+ALL' \
+	"${UNPACK}/etc/sudoers.d/90-rescue"; then
+	ok "rescue rule grants NOPASSWD: ALL (the documented acceptance check is 'sudo -n id')"
+else
+	bad "rescue rule in /etc/sudoers.d/90-rescue does not grant NOPASSWD: ALL"
+fi
+PAM_STK=$(grep -c '^[[:space:]]*\(auth\|account\|password\|session\)[[:space:]]\+required[[:space:]]\+pam_permit\.so' \
+	"${UNPACK}/etc/pam.d/sudo" 2>/dev/null || echo 0)
+if [ "${PAM_STK}" -ge 4 ]; then
+	ok "/etc/pam.d/sudo provides all four pam_permit stacks (${PAM_STK}) - sudo-rs aborts without them"
+else
+	bad "/etc/pam.d/sudo has ${PAM_STK}/4 pam_permit stacks (sudo-rs needs auth+account+password+session)"
+fi
+# the unprivileged login account must exist and its shell must be listed in
+# /etc/shells (dropbear rejects an unknown shell).
+if grep -qE '^rescue:x:1000:1000:[^:]*:/home/rescue:/bin/sh$' "${UNPACK}/etc/passwd"; then
+	ok "/etc/passwd has rescue:1000:1000 with home /home/rescue and shell /bin/sh"
+else
+	bad "/etc/passwd lacks the rescue login account (rescue:x:1000:...:/home/rescue:/bin/sh)"
+fi
+if grep -qE '^rescue:x:1000:' "${UNPACK}/etc/group"; then
+	ok "/etc/group has the rescue group (gid 1000)"
+else
+	bad "/etc/group lacks the rescue group (gid 1000)"
+fi
+if [ -f "${UNPACK}/home/rescue/.ssh/authorized_keys" ]; then
+	ok "extracted /home/rescue/.ssh/authorized_keys present (dropbear opens it after seteuid(1000))"
+else
+	note "extracted /home/rescue/.ssh/authorized_keys absent (no C2S_AUTHORIZED_KEYS at build time)"
+fi
+# `sudo -n id` needs `id` on the image's PATH: sudo-rs's secure_path is
+# /usr/bin:/bin:/usr/sbin:/sbin, so /bin/id must exist (busybox applet).
+if [ -e "${UNPACK}/bin/id" ]; then
+	ok "/bin/id present (sudo -n id can resolve the command)"
+else
+	bad "/bin/id missing - 'sudo -n id' would fail with 'id: command not found'"
+fi
+# --- dropbear must NOT pin authorized_keys to /root/.ssh
+# A single -D /root/.ssh makes every login read root's key file, and
+# dropbear opens it with seteuid() to the authenticating user, so a
+# non-root login can never authenticate.  Per-user ~/.ssh is required.
+# Only the *command* is inspected: a "-D" inside a comment must not be
+# mistaken for the option.
+DROPBEAR_CMD=$(grep -E '^[[:space:]]*dropbear[[:space:]]' "${UNPACK}/init" \
+	| grep -v '^[[:space:]]*#' | head -n1)
+if printf '%s\n' "${DROPBEAR_CMD}" | grep -qE '(^|[[:space:]])-D([[:space:]]|$)'; then
+	bad "/init passes -D to dropbear: authorized_keys would be pinned to /root/.ssh and the rescue login could never authenticate: ${DROPBEAR_CMD}"
+else
+	ok "/init does not pass -D to dropbear (per-user ~/.ssh/authorized_keys): ${DROPBEAR_CMD}"
+fi
+if grep -q 'home/rescue/.ssh/authorized_keys' "${UNPACK}/init"; then
+	ok "/init accepts /home/rescue/.ssh/authorized_keys as a dropbear start condition"
+else
+	bad "/init does not look for /home/rescue/.ssh/authorized_keys"
+fi
+
+# --- functional: run the shipped sudo under a root-owned chroot
+# sudo-rs checks that it is owned by uid 0 and setuid, so the tree must be
+# root-owned.  The host's passwordless sudo is used to copy the extracted
+# rootfs and chown it; if the host cannot do that, the content gates above
+# still apply and this step is reported as a note (not a silent pass).
+section "functional sudo under qemu"
+if sudo -n true > /dev/null 2>&1; then
+	FNROOT="${OUTDIR}/verify-sudo-root"
+	rm -rf "${FNROOT}"
+	mkdir -p "${FNROOT}"
+	if sudo cp -a "${UNPACK}/." "${FNROOT}/" > /dev/null 2>&1 \
+	   && sudo chown -R root:root "${FNROOT}" > /dev/null 2>&1; then
+		sudo chmod 0755 "${FNROOT}" "${FNROOT}/bin" "${FNROOT}/usr" \
+			"${FNROOT}/usr/bin" "${FNROOT}/usr/lib" "${FNROOT}/lib" 2>/dev/null
+		sudo chmod 4755 "${FNROOT}/usr/bin/sudo" 2>/dev/null
+		sudo chmod 0440 "${FNROOT}/etc/sudoers" \
+			"${FNROOT}/etc/sudoers.d/90-rescue" 2>/dev/null
+		# sudo-rs resolves commands via secure_path; give the chroot a
+		# working /bin/id so the acceptance command can run.
+		if [ ! -e "${FNROOT}/bin/id" ] && [ -x "${FNROOT}/bin/busybox" ]; then
+			sudo ln -sf /bin/busybox "${FNROOT}/bin/id" 2>/dev/null
+		fi
+		# The sudoers rule is parsed by uid, not by name: the account
+		# must be resolvable, so passwd/group are already in place.
+		SUDO_OUT=$(sudo chroot "${FNROOT}" /usr/bin/sudo -n -l -U rescue 2>&1)
+		SUDO_RC=$?
+		if [ ${SUDO_RC} -eq 0 ] && printf '%s\n' "${SUDO_OUT}" | grep -q 'NOPASSWD: ALL'; then
+			ok "chroot sudo -n -l -U rescue lists NOPASSWD: ALL (sudoers+PAM load correctly): $(printf '%s\n' "${SUDO_OUT}" | tr '\n' ' ')"
+		else
+			bad "chroot sudo -n -l -U rescue failed (rc=${SUDO_RC}): ${SUDO_OUT}"
+		fi
+		ID_OUT=$(sudo chroot "${FNROOT}" /usr/bin/sudo -n id 2>&1)
+		ID_RC=$?
+		if [ ${ID_RC} -eq 0 ] && printf '%s\n' "${ID_OUT}" | grep -q 'uid=0(root)'; then
+			ok "chroot sudo -n id as root -> uid=0(root): ${ID_OUT}"
+		else
+			bad "chroot sudo -n id failed (rc=${ID_RC}): ${ID_OUT}"
+		fi
+		# Negative control: sudo must refuse to load when the setuid bit
+		# is cleared.  Without this the two checks above could pass for
+		# reasons that have nothing to do with the setuid requirement.
+		#
+		# Two constraints must be satisfied at once: sudo-rs only
+		# enforces the setuid check for a NON-root caller (root may run
+		# a non-setuid sudo), and chroot() needs CAP_SYS_CHROOT, which
+		# an unprivileged user does not have.  So the tree is entered
+		# by root and the *command* is then run with the unprivileged
+		# credentials via `sudo -u`.  qemu-user is used to execute the
+		# aarch64 binary; binfmt would do the same but only when the
+		# caller is root, which would defeat the purpose here.
+		NOBODY=""
+		for _u in nobody daemon bin; do
+			if id "${_u}" > /dev/null 2>&1; then NOBODY="${_u}"; break; fi
+		done
+		if [ -n "${NOBODY}" ]; then
+			sudo chmod 0755 "${FNROOT}/usr/bin/sudo" 2>/dev/null
+			sudo chown "${NOBODY}:${NOBODY}" "${FNROOT}/usr/bin/sudo" 2>/dev/null
+			# the unprivileged account must exist INSIDE the chroot too
+			NOBODY_UID=$(id -u "${NOBODY}" 2> /dev/null || echo 65534)
+			NOBODY_GID=$(id -g "${NOBODY}" 2> /dev/null || echo 65534)
+			if ! grep -q "^${NOBODY}:" "${FNROOT}/etc/passwd" 2> /dev/null; then
+				sudo sh -c "echo '${NOBODY}:x:${NOBODY_UID}:${NOBODY_GID}:${NOBODY}:/nonexistent:/bin/sh' >> '${FNROOT}/etc/passwd'" 2> /dev/null
+			fi
+			NEG_OUT=$(sudo chroot "${FNROOT}" \
+				/bin/sh -c "exec sudo -u ${NOBODY} /usr/bin/sudo -n -l -U rescue" 2>&1)
+			NEG_RC=$?
+			if [ ${NEG_RC} -ne 0 ] && printf '%s\n' "${NEG_OUT}" | grep -qi 'setuid'; then
+				ok "negative control: sudo refuses to run without the setuid bit (gate is sensitive): ${NEG_OUT}"
+			else
+				bad "negative control failed: sudo still ran without the setuid bit as ${NOBODY} (rc=${NEG_RC}): ${NEG_OUT}"
+			fi
+			sudo chmod 4755 "${FNROOT}/usr/bin/sudo" 2>/dev/null
+			sudo chown root:root "${FNROOT}/usr/bin/sudo" 2>/dev/null
+		else
+			note "no unprivileged account available; the setuid negative control was skipped"
+		fi
+		# qemu-user does not emulate setuid elevation, so a non-root
+		# caller cannot be exercised here.  The elevation path itself is
+		# proven natively on the host (see docs/evidence.md) and must be
+		# confirmed on the device with `sudo -n id`.
+		note "qemu-user does not emulate setuid elevation: non-root 'sudo -n id' is device-only evidence"
+		sudo rm -rf "${FNROOT}" 2>/dev/null || true
+	else
+		note "could not create a root-owned copy of the rootfs; functional sudo test skipped"
+		sudo rm -rf "${FNROOT}" 2>/dev/null || true
+	fi
+else
+	note "host has no passwordless sudo; functional sudo test skipped (content gates above still apply)"
+fi
 
 # ------------------------------------------------ regression (issue #4)
 # The shipped archive itself (not the staging tree) must carry every
@@ -1103,6 +1430,118 @@ PYEOF
 	fi
 else
 	note "no packaged boot.img in ${OUTDIR}; DT-table checks skipped"
+fi
+
+# ------------------------------------------ packaged image: sudo payload
+# The gates above check the *staging* tree and the standalone cpio.  The
+# deliverable is the signed boot.img, so the sudo/sudoers/rescue-account
+# payload must also be proven present in the ramdisk that is actually
+# shipped: a packaging step that dropped it would otherwise pass every
+# earlier check.
+section "packaged boot.img: sudo payload"
+if [ -s "${OUTDIR}/boot.img" ] && command -v python3 > /dev/null; then
+	PKG_LIST=$(python3 - "${OUTDIR}/boot.img" <<'PYEOF'
+import gzip, struct, sys
+
+img = open(sys.argv[1], "rb").read()
+# Samsung ANDR boot.img: kernel_size at +8, ramdisk size at +16 and
+# page_size at +36; the payload follows the header page(s).
+page = struct.unpack_from("<I", img, 36)[0]
+ksize = struct.unpack_from("<I", img, 8)[0]
+rsize = struct.unpack_from("<I", img, 16)[0]
+off = page + ((ksize + page - 1) // page) * page
+ram = img[off:off + rsize]
+try:
+    ram = gzip.decompress(ram)
+except Exception:
+    sys.exit(1)
+
+def align4(x):
+    return (x + 3) & ~3
+
+o = 0
+while o + 110 <= len(ram):
+    if ram[o:o+6] not in (b"070701", b"070702"):
+        o += 1
+        continue
+    h = ram[o:o+110]
+    try:
+        mode = int(h[14:22], 16); uid = int(h[22:30], 16); gid = int(h[30:38], 16)
+        nsz = int(h[94:102], 16); fsz = int(h[54:62], 16)
+    except ValueError:
+        o += 1
+        continue
+    name = ram[o+110:o+110+nsz].rstrip(b"\0")
+    if name == b"TRAILER!!!":
+        break
+    ftype = "?"
+    m = mode & 0o170000
+    if m == 0o120000: ftype = "l"
+    elif m == 0o040000: ftype = "d"
+    elif m == 0o100000: ftype = "f"
+    print("%06o %d %d %s %s" % (mode, uid, gid, ftype, name.decode("utf-8", "replace")))
+    o = align4(align4(o + 110 + nsz) + fsz)
+PYEOF
+)
+	if [ -z "${PKG_LIST}" ]; then
+		bad "could not parse the packed boot.img ramdisk for the sudo payload"
+	else
+		PKG_ENTRY() { printf '%s\n' "${PKG_LIST}" | grep -aE "^[0-9]{6} [0-9]+ [0-9]+ [fdlbcps] $1\$" | head -n1; }
+		PKG_SUDO=$(PKG_ENTRY "usr/bin/sudo")
+		if [ -n "${PKG_SUDO}" ] && printf '%s\n' "${PKG_SUDO}" | grep -qE '^104755 0 0 '; then
+			ok "packaged ramdisk carries setuid-root /usr/bin/sudo: ${PKG_SUDO}"
+		else
+			bad "packaged ramdisk has no setuid-root /usr/bin/sudo: ${PKG_SUDO:-<absent>}"
+		fi
+		for p in "lib/ld-musl-aarch64.so.1" "usr/lib/libpam.so.0.85.1" \
+		         "usr/lib/security/pam_permit.so" "usr/lib/libgcc_s.so.1"; do
+			if [ -n "$(PKG_ENTRY "${p}")" ]; then
+				ok "packaged ramdisk carries /${p}"
+			else
+				bad "packaged ramdisk is missing /${p}"
+			fi
+		done
+		PKG_SUDOERS=$(PKG_ENTRY "etc/sudoers")
+		PKG_RULE=$(PKG_ENTRY "etc/sudoers.d/90-rescue")
+		PKG_PAM=$(PKG_ENTRY "etc/pam.d/sudo")
+		if [ -n "${PKG_SUDOERS}" ] && printf '%s\n' "${PKG_SUDOERS}" | grep -qE '^100440 0 0 '; then
+			ok "packaged ramdisk /etc/sudoers is root-owned 0440: ${PKG_SUDOERS}"
+		else
+			bad "packaged ramdisk /etc/sudoers missing or not root-owned 0440: ${PKG_SUDOERS:-<absent>}"
+		fi
+		if [ -n "${PKG_RULE}" ] && printf '%s\n' "${PKG_RULE}" | grep -qE '^100440 0 0 '; then
+			ok "packaged ramdisk /etc/sudoers.d/90-rescue is root-owned 0440: ${PKG_RULE}"
+		else
+			bad "packaged ramdisk /etc/sudoers.d/90-rescue missing or not root-owned 0440: ${PKG_RULE:-<absent>}"
+		fi
+		if [ -n "${PKG_PAM}" ]; then
+			ok "packaged ramdisk carries /etc/pam.d/sudo: ${PKG_PAM}"
+		else
+			bad "packaged ramdisk is missing /etc/pam.d/sudo (sudo-rs aborts without it)"
+		fi
+		PKG_AK=$(PKG_ENTRY "home/rescue/.ssh/authorized_keys")
+		if [ -n "${PKG_AK}" ] && printf '%s\n' "${PKG_AK}" | grep -qE '^100600 1000 1000 '; then
+			ok "packaged ramdisk carries /home/rescue/.ssh/authorized_keys as uid 1000 mode 0600: ${PKG_AK}"
+		elif [ -n "${PKG_AK}" ]; then
+			bad "packaged ramdisk /home/rescue/.ssh/authorized_keys is not uid 1000 mode 0600: ${PKG_AK}"
+		else
+			note "packaged ramdisk has no /home/rescue/.ssh/authorized_keys (no C2S_AUTHORIZED_KEYS at build time)"
+		fi
+		PKG_ROOT_AK=$(PKG_ENTRY "root/.ssh/authorized_keys")
+		if [ -n "${PKG_ROOT_AK}" ] && printf '%s\n' "${PKG_ROOT_AK}" | grep -qE '^100600 0 0 '; then
+			ok "packaged ramdisk carries /root/.ssh/authorized_keys as root mode 0600: ${PKG_ROOT_AK}"
+		else
+			bad "packaged ramdisk /root/.ssh/authorized_keys missing or not root-owned 0600: ${PKG_ROOT_AK:-<absent>}"
+		fi
+		PKG_PASSWD=$(PKG_ENTRY "etc/passwd")
+		if [ -n "${PKG_PASSWD}" ]; then
+			ok "packaged ramdisk carries /etc/passwd (rescue login account resolvable): ${PKG_PASSWD}"
+		else
+			bad "packaged ramdisk is missing /etc/passwd"
+		fi
+	fi
+else
+	note "no packaged boot.img in ${OUTDIR}; packaged sudo payload checks skipped"
 fi
 
 # ---------------------------------------------------------- secrets scan

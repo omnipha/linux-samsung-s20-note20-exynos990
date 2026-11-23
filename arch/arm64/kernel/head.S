@@ -296,13 +296,33 @@ SYM_CODE_START(primary_entry)
 	adr_l	x1, __idmap_text_end
 	adr_l	x2, dcache_clean_poc
 	blr	x2
+	/*
+	 * Convergence point for both entry paths.  The cache-off path
+	 * (cbnz x19 taken-not, the path this device takes: the bootloader
+	 * disables the MMU before jumping here) reaches this label via
+	 * `b 1f` above; the cache-on path falls straight through from the
+	 * dcache_clean_poc() call.  Label 1: must sit *here*, before the
+	 * M1b block - putting it after the block let `b 1f` skip M1b
+	 * entirely, so the green band could never appear on the device's
+	 * own entry path (issue #5).  The continuation after M1b is a
+	 * separate label (no numeric label) so both paths still join at
+	 * the `mov x0, x19` that follows.
+	 */
+1:
 #ifdef CONFIG_C2S_DIAG
 	/*
-	 * M1b: executed with the MMU and D-cache still off, immediately
-	 * after __pi_create_init_idmap() and its cache maintenance, and
-	 * strictly before init_kernel_el().  Plain physical stores only -
-	 * exactly the M1 path that is proven on hardware - and
-	 * deliberately no DECON MMIO and no refresh trigger here.
+	 * M1b: executed immediately after __pi_create_init_idmap() and its
+	 * cache maintenance, and strictly before init_kernel_el(), on BOTH
+	 * entry paths.  Plain physical stores only - exactly the M1 path
+	 * that is proven on hardware - and deliberately no DECON MMIO and
+	 * no refresh trigger here.
+	 *
+	 * On the cache-off path (the one this device takes) the MMU and
+	 * D-cache are still off at this point, so the stores below hit
+	 * DRAM directly.  On the cache-on path they are still on, but the
+	 * MMU state is unchanged since M1 ran, so the stores are exactly
+	 * as valid as M1's were - if M1's white band is visible, M1b's
+	 * green band is too.
 	 *
 	 * Purpose: M1's c2s_decon_refresh m1 is the only piece of code
 	 * that touches 0x19050000 while the MMU is off.  If that MMIO
@@ -317,12 +337,13 @@ SYM_CODE_START(primary_entry)
 	 * Colour green 0xff00ff00 in a8r8g8b8 (M1 = white rows 0..127,
 	 * M2 = red rows 128..255): distinct from both under any channel
 	 * order ambiguity.  Band rows 256..383 = offset 256*5760 =
-	 * 0x12c000, 128 rows = 0xb4000 bytes per buffer.
+	 * 0x168000, 128 rows = 0xb4000 bytes per buffer.
 	 *
 	 * Registers: x4..x12 only.  x19 (MMU state), x20 (boot mode),
 	 * x21 (FDT) are live across this point and are not touched;
 	 * x0..x3 are dead here (boot_args already recorded in
-	 * preserve_boot_args()).
+	 * preserve_boot_args(), and both cache-maintenance calls above
+	 * have already consumed their arguments).
 	 */
 	/*
 	 * Colour encoding: the painters store 64 bits at a time
@@ -388,7 +409,7 @@ SYM_CODE_START(primary_entry)
 
 	dsb	sy
 #endif
-1:	mov	x0, x19
+	mov	x0, x19
 	bl	init_kernel_el			// w0=cpu_boot_mode
 	mov	x20, x0
 

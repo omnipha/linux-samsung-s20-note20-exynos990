@@ -522,3 +522,172 @@ Band addresses in the Image (offset = VA - `0xffff800080000000`):
   markers; this candidate changes only `head.S` and `verify.sh`.
 * Every claim about what the panel shows remains host-unverified until
   the coordinator runs the hardware readout.
+
+## Candidate 5 (turn 2026-11-23): M1b control-flow fix + passwordless sudo
+
+### Defect: the M1b green band was unreachable on the device's own path
+
+Candidate 4 shipped M1b between the `0:` and `1:` labels of
+`primary_entry`. The MMU-off entry path - the one this device takes,
+because the bootloader disables the MMU before jumping to the kernel -
+executes `b 1f` to skip the dcache maintenance, which jumped **over the
+whole M1b block**. Every byte-level gate passed (the movz+3×movk colour
+build was present and solid) and the green band could never appear on
+the panel. The cache-on path fell through into M1b, so the band was
+reachable from one of the two entry paths but not the other.
+
+The fix moves label `1:` to immediately after the `0:` block's `blr x2`,
+i.e. **before** the M1b block, so the cache-off path's `b 1f` lands on
+the M1b block and the cache-on path falls through into it. Both paths
+then execute M1b and join at the `mov x0, x19` that follows. Label
+numbering was checked first: within `primary_entry` the only numeric
+label references are `cbnz x19, 0f` and `b 1f`, and there is **no `1b`
+anywhere in `head.S`**, so moving `1:` cannot retarget any other
+reference (the other `1:`/`2:` labels live in `record_mmu_state`,
+`init_kernel_el` and later functions).
+
+### New regression: CFG-reachability gate
+
+Marker *bytes* in the Image prove the code was compiled in; they say
+nothing about whether the CPU can ever execute it. This is exactly the
+defect above, which is why a byte-level gate could not catch it.
+
+`c2s-rescue/scripts/check-marker-reachability.py` builds a control-flow
+graph from the **disassembly** of a function and reports, per marker,
+whether its first instruction is reachable from the function entry. For
+`primary_entry` it additionally splits reachability at the `cbnz x19`
+MMU-state branch and requires the marker to be reachable on **both** the
+cache-off and the cache-on path. It is wired into `verify.sh` for
+`primary_entry` (M1 + M1b), `__primary_switch` (M3 + M4) and
+`__primary_switched` (M2).
+
+The gate carries its own **negative control**: a committed pre-fix
+objdump listing (`c2s-rescue/tests/fixtures/primary_entry.prefix-m1b-unreachable.txt`)
+which the checker must *reject* (`--expect-unreachable`). If that input
+ever reports PASS the gate has become insensitive and the regression is
+no longer guarded - the control therefore proves the gate is sensitive
+rather than merely asserting it.
+
+A second gate defect was found and fixed while wiring it in: the
+M4 colour key in `MARKER_COLOURS` was wrong (`0xFFFF00FFFF00FFFF`, cyan)
+instead of the actual build `0xFFFF00FFFFFF00FF`. The checker keys
+markers by *shape* (a colour build in front of the stride/height
+prologue), so reachability verdicts were unaffected, but M4 was reported
+under a wrong name.
+
+### Passwordless sudo for the SSH login user (issue #5 task 3)
+
+The image now ships an unprivileged login account and passwordless sudo
+for it, so an SSH session is not root:
+
+| component | value |
+|---|---|
+| login account | `rescue`, uid 1000 gid 1000, home `/home/rescue`, shell `/bin/sh` |
+| sudo | `sudo-rs 0.2.15` (postmarketOS aarch64 package), setuid root, `/usr/bin/sudo` |
+| runtime | musl loader + `libc.musl-aarch64.so.1`, `libpam.so.0.85.1`, `libgcc_s.so.1`, `pam_permit.so` |
+| sudoers | `/etc/sudoers` root-owned 0440 with an **active** `@includedir /etc/sudoers.d`; `/etc/sudoers.d/90-rescue` root-owned 0440 granting `NOPASSWD: ALL` to `rescue` and `root` |
+| PAM | `/etc/pam.d/sudo` with `pam_permit` on auth/account/password/session |
+| keys | the operator key is installed for **both** `root` and `rescue` (dropbear resolves `~/.ssh/authorized_keys` per user) |
+| dropbear | started **without** `-D`, so each account reads its own `<home>/.ssh/authorized_keys` |
+
+Non-obvious constraints that the implementation had to satisfy:
+
+* **sudo-rs is unusually strict.** It refuses a sudo binary that is not
+  owned by uid 0 *with* the setuid bit, refuses a sudoers file that is
+  not root-owned mode 0440, refuses an inactive `@includedir`, and
+  aborts outright when `/etc/pam.d/sudo` is missing. `Defaults
+  !authenticate` is rejected as an unknown setting.
+* **The `-D` removal is required, not cosmetic.** dropbear opens
+  `authorized_keys` with `seteuid()` to the authenticating user
+  (`svr-authpubkey.c`), so a root-owned 0600 key file is unreadable for
+  a uid 1000 login. With `-D /root/.ssh` forced for everyone, the
+  `rescue` account could never authenticate. Per-user `~/.ssh` is
+  therefore the only workable arrangement, and `/home/rescue` must be
+  owned by uid 1000 so dropbear's `checkpubkeyperms()` path walk (owner
+  == login user or root, no group/other write) accepts it.
+* **`sudo -n id` needs `id` on the image's PATH.** sudo-rs's
+  `secure_path` is `/usr/bin:/bin:/usr/sbin:/sbin`, and busybox's `id`
+  applet was not linked into the initramfs, so `id`/`whoami`/`groups`
+  were added to the `APPLETS` list. Without this the acceptance command
+  fails with `id: command not found`.
+* **gen_initramfs.sh's `-u squash -g squash` does not apply here.** That
+  remap only runs for *directory* sources; a plain cpio list file is
+  `cat`'d verbatim, so the uid/gid written into the list are the ones
+  that land in the archive. This is why `/home/rescue` can really be
+  uid 1000. New helper `c2s-rescue/scripts/cpio-listing.py` parses the
+  newc headers and prints **numeric** mode/uid/gid: `cpio -itv` resolves
+  the uid against the *host* passwd database, so an entry that must be
+  owned by uid 1000 renders as `gregor gregor` on this build host and a
+  name-based check would be meaningless.
+* **Setuid survives packing.** `gen_init_cpio` writes `mode | S_IFREG`
+  verbatim, and the kernel's initramfs unpacker does `vfs_fchown` then
+  `vfs_fchmod(wfile, mode)`; `chmod_common` keeps `S_IALLUGO` (which
+  includes `S_ISUID`) and sets no `ATTR_KILL_PRIV`.
+
+### Host evidence (candidate 5)
+
+* Build: `C2S_DEFCONFIG=c2s_rescue_diag_defconfig
+  C2S_AUTHORIZED_KEYS=$HOME/.ssh/id_ed25519.pub
+  C2S_OUTDIR=/tmp/opencode/c2s-diag6-out build.sh`, exit 0.
+* `verify.sh /tmp/opencode/c2s-diag6-out`: **217 passed, 0 failed**
+  (candidate 4 had 173; the increase is the new sudo and CFG gates).
+* **CFG gate, `primary_entry` on this candidate:** M1-white *and*
+  M1b-green reachable from entry **and from both** MMU-state paths
+  (cache-off + cache-on). M3 + M4 reachable from `__primary_switch`,
+  M2 reachable from `__primary_switched`.
+* **CFG negative control:** the committed pre-fix listing is rejected
+  (`RESULT: PASS (1 marker(s) unreachable - gate correctly rejects this
+  input)`), i.e. the gate is sensitive.
+* **Band gate on the packaged kernel payload:** 5 markers, all `SOLID`.
+  The payload embedded in `boot.img` (Samsung `ANDR` header,
+  `kernel_size` at +8 = 12 808 704, payload at +2048) is **byte-identical**
+  to `kbuild/.../Image`.
+* **Functional sudo under qemu, in a root-owned chroot of the packed
+  rootfs:** `sudo -n -l -U rescue` prints `(ALL : ALL) NOPASSWD: ALL`;
+  `sudo -n id` prints `uid=0(root) gid=0(root) groups=0(root)`.
+* **sudo negative control:** with the setuid bit cleared and the command
+  run as an unprivileged account inside the same chroot, sudo-rs refuses
+  with `sudo: sudo must be owned by uid 0 and have the setuid bit set`.
+  This control *must* run as non-root: sudo-rs only enforces the check
+  for a non-root caller, and `chroot()` needs `CAP_SYS_CHROOT`, so the
+  tree is entered by root and the command is then run via `sudo -u`.
+* **Native (x86_64) proof of the elevation path:** with the exact
+  candidate `/etc/sudoers` + `/etc/sudoers.d/90-rescue` + `/etc/pam.d/sudo`
+  bound over the host's sudo-rs 0.2.13 and the caller dropped to a
+  non-root uid, `sudo -n id` returned `uid=0(root) gid=0(root)
+  groups=0(root)`. Root was correctly refused ("I'm sorry root. I'm
+  afraid I can't do that") because it had no rule at that point. The
+  host's `/etc/sudoers` was restored and re-verified afterwards.
+
+### Artefacts (candidate 5)
+
+| Artefact | Path | Size (B) | sha256 |
+|---|---|---|---|
+| boot.img (signed, candidate 5) | `/tmp/opencode/c2s-diag6-out/boot.img` | 61 865 984 | `13cdc38ca0725706d7367ef9fcd023e1ce5bdd034f8436720da67e9688c49243` |
+| Image (diag6) | `/tmp/opencode/c2s-diag6-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `909d03e1c971302f9b805384d2ac97f958add003a85d9029417c1b50f952eb9a` |
+| DTB | `/tmp/opencode/c2s-diag6-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 867 | `43424d49fc43e92ef00cff558058a3edb232592ab3bd89e6f4262b449fb122f2` |
+| initramfs | `/tmp/opencode/c2s-diag6-out/work/initramfs.cpio.gz` | 3 367 458 | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table
+`d7b7ab1e` ok, `avbtool verify_image` OK, FDT 141 867 B == kbuild DTB.
+
+Band addresses in the Image (offset = VA - `0xffff800080000000`):
+
+| marker | Image offset | first instruction | value |
+|---|---|---|---|
+| M1 white | `0x6cc0b8` | `mov x4, #0xffff` | `0xffffffffffffffff` |
+| M1b green | `0x6cc224` | `mov x4, #0xff00` | `0xff00ff00ff00ff00` |
+| M3 blue | `0x6cc814` | `mov x4, #0x00ff` | `0xff0000ffff0000ff` |
+| M4 magenta | `0x6cc928` | `mov x4, #0x00ff` | `0xffff00ffffff00ff` |
+| M2 red | `0x6e84b0` | `mov x4, #0x0` | `0xffff0000ffff0000` |
+
+### Still open
+
+* **qemu-user does not emulate setuid elevation**, so a non-root
+  `sudo -n id` cannot be exercised on the build host: the elevation
+  path is proven natively on the host's sudo-rs and must be confirmed
+  on the device with `sudo -n id`.
+* USB gadget enumeration (issue #5 task 2) and the panel readout
+  (issue #5 task 1) are hardware-only; no host evidence can substitute.
+* Every claim about what the panel shows remains host-unverified until
+  the coordinator runs the hardware readout.

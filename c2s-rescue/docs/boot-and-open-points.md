@@ -50,15 +50,15 @@ C2S_AUTHORIZED_KEYS=~/.ssh/id_ed25519.pub \
   ./c2s-rescue/scripts/build.sh --outdir /tmp/opencode/c2s-out
 ```
 
-Without it the archive ships **without** `/root/.ssh/authorized_keys`
-and dropbear is never started by `/init` (it logs
-"no /root/.ssh/authorized_keys: dropbear NOT started"). The key can
-also be added later by mounting the rescue system from an already
+Without it the archive ships **without** any `authorized_keys` file and
+dropbear is never started by `/init` (it logs
+"no authorized_keys for rescue or root: dropbear NOT started"). The key
+can also be added later by mounting the rescue system from an already
 running rescue instance.
 
 **The deliverable must be built WITH the key.** A packaged image
-without `/root/.ssh/authorized_keys` cannot provide SSH even if USB
-works - that is the blocker that disqualified candidate `4b823391…`.
+without an `authorized_keys` file cannot provide SSH even if USB works -
+that is the blocker that disqualified candidate `4b823391…`.
 `verify.sh` now proves the key from the packaged `boot.img` itself
 (section "packaged boot.img: root/.ssh/authorized_keys"): the ramdisk
 slot is sliced out of the image, the cpio entry is read directly, and
@@ -66,6 +66,33 @@ its OpenSSH fingerprint must equal the source key's fingerprint with
 mode 0600. Use
 `c2s-rescue/scripts/prove-authorized-keys.sh boot.img ~/.ssh/id_ed25519.pub`
 to check an artifact by hand.
+
+The same key is installed for **two** accounts, because dropbear is
+started without `-D` and therefore resolves `~/.ssh/authorized_keys`
+per login account:
+
+* `/root/.ssh/authorized_keys` (uid 0, mode 0600) - the root login.
+* `/home/rescue/.ssh/authorized_keys` (uid 1000, mode 0600) - the
+  unprivileged login account.
+
+The `rescue` account exists so an SSH session is not root. It has
+passwordless sudo, so the documented acceptance command works from
+either account:
+
+```sh
+ssh rescue@192.168.42.2    # or .62
+sudo -n id                  # -> uid=0(root) gid=0(root) groups=0(root)
+```
+
+`sudo -n` is sudo-rs 0.2.15 (not the original sudo) and is unusually
+strict: `/usr/bin/sudo` must be setuid root, `/etc/sudoers` and
+`/etc/sudoers.d/90-rescue` must be root-owned mode 0440, the
+`@includedir` in `/etc/sudoers` must be active (not commented), and
+`/etc/pam.d/sudo` must exist or sudo-rs aborts with a PAM error. All of
+these are shipped in the image and re-proven inside the **signed**
+`boot.img` by `verify.sh` (section "packaged boot.img: sudo payload").
+`Defaults !authenticate` must not be used: sudo-rs rejects it as an
+unknown setting.
 
 ## Booting (manual, not performed here)
 
@@ -135,11 +162,12 @@ recovery path (download mode / Odin).
    | NCM (Linux/macOS) | 192.168.42.1/24 | 192.168.42.2 |
    | RNDIS (Windows) | 192.168.62.1/24 | 192.168.62.2 |
 
-4. If `/root/.ssh/authorized_keys` is non-empty **and** at least one
-   USB network interface exists, dropbear starts on
-   `192.168.42.1:22` and `192.168.62.1:22` (pubkey only). With no
-   network interface (console-only stage) dropbear is deliberately not
-   started - it would have nothing to bind to.
+4. If `/home/rescue/.ssh/authorized_keys` or
+   `/root/.ssh/authorized_keys` is non-empty **and** at least one USB
+   network interface exists, dropbear starts on `192.168.42.1:22` and
+   `192.168.62.1:22` (pubkey only, per-user `~/.ssh/authorized_keys`).
+   With no network interface (console-only stage) dropbear is
+   deliberately not started - it would have nothing to bind to.
 5. A shell on the framebuffer console is kept alive and is respawned
    if it dies; dropbear and (if enabled) telnetd are supervised the
    same way.
@@ -225,8 +253,22 @@ These are known and documented rather than solved:
 - Password and PAM authentication are compiled out of dropbear
   (`DROPBEAR_SVR_PASSWORD_AUTH 0`, `DROPBEAR_SVR_PAM_AUTH 0`,
   `DROPBEAR_SVR_PUBKEY_AUTH 1`); `/etc/shadow` is absent on purpose,
-  so the root account is unusable for password login even if the build
+  so neither account is usable for password login even if the build
   option were ever flipped.
+- The image ships an unprivileged login account (`rescue`, uid 1000) in
+  addition to `root`, and both have `NOPASSWD: ALL` in
+  `/etc/sudoers.d/90-rescue`. Passwordless sudo is a deliberate
+  property of a *rescue* image: the only credential is the SSH public
+  key and the operator is expected to need root to fix the device. It
+  is not a general-purpose multi-user system.
+- sudo-rs is configured with a `pam_permit` stack because sudo-rs
+  aborts if `/etc/pam.d/sudo` is missing; `pam_permit` never
+  authenticates anything, which is consistent with the NOPASSWD rules
+  and with dropbear having no password auth at all.
+- The sudo binary is setuid root, which is what sudo-rs requires in
+  order to load. `verify.sh` proves the setuid bit in the packed
+  archive and has a negative control showing sudo-rs refuses to run
+  without it.
 - Telnet has no authentication; it is doubly gated (config flag +
   marker file) and defaults off.
 - `/etc/rescue.conf` and `/init` keep both subnets and ports in one
@@ -265,21 +307,22 @@ the host-side evidence cannot show:
    verification (170 gates + 5 fault cases) is necessary evidence, not
    sufficient.
 
-## Current candidate (SSH key included)
+## Current candidate (SSH key included, M1b control-flow fix, passwordless sudo)
 
 | Artifact | Size | sha256 |
 |---|---|---|
-| `boot.img` | 61,865,984 B | `5a0426dc8eae34bd8acb17cd5617fbad243b9d33485f0139ee43f46e9a36cd19` |
-| `Image` | 11,760,128 B | `e76231352894124d2434e130f338ad2842848c86e4a4425644af9caee59a2f69` |
-| `initramfs.cpio.gz` | 2,496,684 B | `eaa35da0a3029b371af55fc19c7049ac52f0ce893dd451a559c0a0a0ee48ce8d` |
+| `boot.img` | 61,865,984 B | `13cdc38ca0725706d7367ef9fcd023e1ce5bdd034f8436720da67e9688c49243` |
+| `Image` | 12,808,704 B | `909d03e1c971302f9b805384d2ac97f958add003a85d9029417c1b50f952eb9a` |
+| `initramfs.cpio.gz` | 3,367,458 B | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
 
 Packaged with the operator's public key (fingerprint
 `SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE`, mode 0600 inside
-the initramfs, proven from the image) and a `SHA256_RSA4096` /
+the initramfs, proven from the image) for **both** `root` and the
+unprivileged `rescue` login account, plus a `SHA256_RSA4096` /
 rollback 13 AVB footer signed with the authorized host key.
 
-Host verification: **174 passed, 0 failed** (`verify.sh`, serial run),
+Host verification: **217 passed, 0 failed** (`verify.sh`, serial run),
 plus 10/10 host fault-injection checks for the ACM-independent
 fallback. Nothing here demonstrates a boot, USB enumeration, serial
-console output or SSH login - those need the coordinator's hardware
-run.
+console output, SSH login or `sudo -n id` on the device - those need
+the coordinator's hardware run.
