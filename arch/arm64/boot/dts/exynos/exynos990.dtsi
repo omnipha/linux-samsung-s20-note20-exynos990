@@ -372,7 +372,7 @@
 			 * Only c2s uses this node; the other exynos990
 			 * boards (c1s, r8s, x1s) reference &usbdrd.
 			 */
-			usbdrd_dwc3_live: usb@0 {
+			usbdrd_dwc3_live: dwc3@0 {
 				compatible = "snps,dwc3";
 				reg = <0x0 0x10000>;
 				interrupts = <GIC_SPI 310 IRQ_TYPE_LEVEL_HIGH>;

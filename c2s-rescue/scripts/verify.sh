@@ -2030,6 +2030,34 @@ else
 	if [ "${_gate}" -eq "${_nov}" ]; then
 		ok "fdtoverlay gate: built DTB accepts all ${_nov} stock dtbo entries"
 	fi
+
+	# -------------------------------- platform device collision gate (issue #5, diag13)
+	COLLISION_CHECKER="${SCRIPT_DIR}/check-platform-device-collisions.py"
+	COLLISION_FIXTURE="${RESCUE_DIR}/tests/fixtures/platform-device-collision.diag12.dts"
+	if [ -s "${COLLISION_FIXTURE}" ] && [ -x "${COLLISION_CHECKER}" ]; then
+		COLLISION_NEG=$(python3 "${COLLISION_CHECKER}" "${COLLISION_FIXTURE}" --expect-collision 2>&1)
+		if [ $? -eq 0 ] && printf '%s\n' "${COLLISION_NEG}" | grep -q "negative control: collision correctly detected"; then
+			ok "platform device collision negative control: diag12 bug IS detected (gate is sensitive)"
+		else
+			bad "platform device collision negative control failed: diag12 bug was not detected: ${COLLISION_NEG}"
+		fi
+	else
+		note "collision fixture or checker missing; collision negative control skipped"
+	fi
+	_col_gate=0
+	for _ov in "${FIXTURES}"/overlay*.dtbo; do
+		if fdtoverlay -i "${DTB}" -o "${_tmpdir}/merged.dtb" \
+			"${_ov}" > /dev/null 2>&1; then
+			if python3 "${COLLISION_CHECKER}" "${_tmpdir}/merged.dtb" > /dev/null 2>&1; then
+				_col_gate=$((_col_gate+1))
+			else
+				bad "platform device name collision detected in ${_ov##*/} post-overlay DTB"
+			fi
+		fi
+	done
+	if [ "${_col_gate}" -eq "${_nov}" ]; then
+		ok "platform device collision gate: 0 name collisions across all ${_nov} merged DTBs"
+	fi
 	rm -rf "${_tmpdir}"
 fi
 

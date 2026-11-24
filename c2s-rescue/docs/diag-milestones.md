@@ -1429,3 +1429,20 @@ diag12 delivers a self-contained panel text console that directly displays the k
 * `c2s-rescue/scripts/verify.sh`: Added `PANIC_TIMEOUT 0` requirement, cmdline options checks,
   negative controls, and `vmlinux` symbol checks for `c2s_diag_console` and `c2s_console_write`.
   **244 passed, 0 failed** on diag12; **245 passed, 0 failed** on baseline.
+
+## Candidate 12 (turn 2026-11-24): diag13 DWC3 gadget UDC registration collision fix
+
+Resolves issue #5: DWC3 gadget child device registration failure due to duplicate sysfs device name `10e00000.usb`.
+
+1. **Proven collision**:
+   - `/soc@0/usb@10e00000/usb@0` (live DWC3 gadget core, translated reg 0x10e00000)
+   - `/usb@10E00000` (stock anchor node with compatible `samsung,exynos-dwusb`, re-enabled by sboot DTBO fragment@82)
+   Both derived bus ID `10e00000.usb` via `of_device_make_bus_id()`.
+2. **Resolution**:
+   - Renamed live node from `usbdrd_dwc3_live: usb@0` to `usbdrd_dwc3_live: dwc3@0` in `exynos990.dtsi` -> bus ID `10e00000.dwc3`.
+   - Stripped `compatible` from stock anchor shells `&udc` and `&usbdrd_phy0` in `exynos990-c2s.dts` -> inert shells never become platform devices even when re-enabled.
+   - Preserved overlay safety: `usbdrd_dwc3` stays on stock anchor `/usb@10E00000/dwc3`.
+   - Dynamic UDC binding in `c2s-gadget.sh` binds to `10e00000.dwc3`.
+3. **Host gates**:
+   - `check-platform-device-collisions.py` and negative control fixture `platform-device-collision.diag12.dts`.
+   - `verify.sh`: **246 passed, 0 failed** on both diag13 and baseline.

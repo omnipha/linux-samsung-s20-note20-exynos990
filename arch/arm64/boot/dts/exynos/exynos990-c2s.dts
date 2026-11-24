@@ -232,3 +232,15 @@
 	vbus-supply = <&reg_dummy>;
 	vbus-boost-supply = <&reg_dummy>;
 };
+
+/*
+ * Keep the stock inert shells (re-enabled by stock DTBO overlays) from
+ * becoming platform devices and colliding with the live devices.
+ */
+&udc {
+	/delete-property/ compatible;
+};
+
+&usbdrd_phy0 {
+	/delete-property/ compatible;
+};

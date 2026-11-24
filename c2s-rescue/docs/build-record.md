@@ -1500,3 +1500,96 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * `fault-injection.sh`: **10 passed, 0 failed**.
 * `verify.sh`: **244 passed, 0 failed** on diag12; **245 passed, 0 failed** on baseline.
 * Console negative controls: console registration removal rejected, font reference removal rejected.
+
+## Build 13 (turn 2026-11-24): diag13 DWC3 gadget UDC registration collision fix
+
+Resolves issue #5: during diag12 boot, `dwc3_exynos_probe()` failed to populate its child device
+because of a sysfs name collision:
+`sysfs: cannot create duplicate filename '/bus/platform/devices/10e00000.usb'`
+resulting in `device_add` failure, no DWC3 core device registration, and empty `/sys/class/udc`
+(`gadget stage=2:udc-absent`).
+
+### Root cause proof
+
+Linux generates platform device bus IDs in `drivers/of/device.c:of_device_make_bus_id()` formatted
+as `%llx.%pOFn` when a `reg` property translates into a physical address.
+Two distinct nodes in the merged device tree yielded the duplicate bus ID `10e00000.usb`:
+1. `/soc@0/usb@10e00000/usb@0` (the live DWC3 gadget core with label `usbdrd_dwc3_live`, `reg = <0x0 0x10000>`
+   translated by parent glue `ranges = <0x0 0x10e00000 0x10000>` to physical address `0x10e00000`, node name `usb`).
+2. `/usb@10E00000` (the stock root-level anchor node with label `udc`, `reg = <0x00 0x10e00000 0x10000>`,
+   compatible `"samsung,exynos-dwusb"`, node name `usb`), which stock DTBO entry `fragment@82` re-enables
+   with `status = "okay"`.
+
+During boot, `/usb@10E00000` was registered first during `arch_initcall` (`of_platform_default_populate_init`).
+Later, when `dwc3-exynos` driver probed in `do_initcalls` and called `of_platform_populate()` on its child,
+`of_device_add()` attempted to register `/soc@0/usb@10e00000/usb@0` as `10e00000.usb`, hitting `-EEXIST`.
+
+### Fix
+
+1. Renamed the live child node in `arch/arm64/boot/dts/exynos/exynos990.dtsi` from `usbdrd_dwc3_live: usb@0`
+   to `usbdrd_dwc3_live: dwc3@0`. Its bus ID becomes `10e00000.dwc3`, matching standard DWC3 naming and eliminating
+   any collision with `usb@*` nodes.
+2. In `arch/arm64/boot/dts/exynos/exynos990-c2s.dts`, deleted the `compatible` property from inert anchor shells
+   `&udc` and `&usbdrd_phy0` (`/delete-property/ compatible;`). Even when sboot overlay flips their status to `"okay"`,
+   `of_platform_bus_create()` skips nodes lacking compatible strings, preventing platform device creation.
+3. Preserved overlay safety: label `usbdrd_dwc3` remains on the inert root shell (`/usb@10E00000/dwc3`) and does not
+   land on the live node. Kept `dr_mode = "peripheral"`.
+4. Dynamic UDC discovery in `/usr/lib/c2s-gadget.sh` (`ls -1 /sys/class/udc | head -n 1`) cleanly binds to `10e00000.dwc3`.
+
+### Host gates
+
+- Added `c2s-rescue/scripts/check-platform-device-collisions.py`: simulates Linux device tree platform device
+  population (`of_platform_default_populate`, `dwc3_exynos_probe`, `of_device_make_bus_id`) and checks for duplicate bus IDs.
+- Added negative control fixture `c2s-rescue/tests/fixtures/platform-device-collision.diag12.dts` reproducing the diag12 collision.
+- Extended `c2s-rescue/scripts/verify.sh` with both the negative control check and verification across all 9 merged DTB variants (0 collisions).
+
+### Build commands (build host)
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag13-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag13-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag13-out
+```
+
+Paired baseline (`CONFIG_C2S_DIAG` off) built into `/tmp/opencode/c2s-diag13-base-out`:
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag13-base-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag13-base-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag13-base-out
+```
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag13, signed) | `/tmp/opencode/c2s-diag13-out/boot.img` | 61 865 984 | `3ec6348cbfb7202e9ae6618dbdfd2c0df289ecccb751d7e768e30a34129f3c5e` |
+| Image (diag13) | `/tmp/opencode/c2s-diag13-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `6e299e8c73e95373a2dce8a17478453374b1f8e64b56dda8a7b429450d32a0a9` |
+| DTB | `/tmp/opencode/c2s-diag13-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 968 | `194ea35d91e38201ac2eea44f13c6940d43acba41dfbb91959ab25a1c5b768f2` |
+| initramfs | `/tmp/opencode/c2s-diag13-out/work/initramfs.cpio.gz` | 3 369 013 | `cd0445405f92cfdeb9efe15bb01559f50e487c62e1b93ef564063fda91975da8` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag13-base-out/boot.img` | 61 865 984 | `8b3e3de7c6d5bfde5839667b466e4ad02d0666415dd23c938f4d654c2164b11e` |
+| Image (baseline) | `/tmp/opencode/c2s-diag13-base-out/kbuild/arch/arm64/boot/Image` | 12 677 632 | `63bb4ec79e920dd34904b757699f702e060ef639c893242e8537612df9d727ec` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 141 968 B == kbuild DTB.
+
+### Host evidence
+
+* `check-c-milestone-bands.py` on diag13 vmlinux: **PASS (20 milestone call site(s) verified)**.
+* `check-c-milestone-bands.py --expect-none` on baseline vmlinux: **PASS (no milestone call sites; baseline build)**.
+* `check-c2s-paint-paths.py`: **PASS (34 paint-path and console properties verified)**.
+* `check-platform-device-collisions.py`: **PASS (0 collisions across 9 merged DTBs)**.
+* `fault-injection.sh`: **10 passed, 0 failed**.
+* `verify.sh`: **246 passed, 0 failed** on diag13; **246 passed, 0 failed** on baseline.
+* Platform device collision negative control: diag12 collision reproduced and detected.
