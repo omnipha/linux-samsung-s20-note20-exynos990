@@ -66,6 +66,15 @@
 		regulator-name = "dummy_reg";
 	};
 
+	ufs_vcc_reg: regulator-ufs-vcc {
+		compatible = "regulator-fixed";
+		regulator-name = "ufs-vcc";
+		gpio = <&gpg1 0 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
 	reserved-memory {
 		/* Must equal the root cells: __reserved_mem_check_root(). */
 		#address-cells = <2>;
@@ -243,4 +252,17 @@
 
 &usbdrd_phy0 {
 	/delete-property/ compatible;
+};
+
+&ufs {
+	/delete-property/ compatible;
+};
+
+&ufs_0 {
+	vcc-supply = <&ufs_vcc_reg>;
+	status = "okay";
+};
+
+&ufs_0_phy {
+	status = "okay";
 };
