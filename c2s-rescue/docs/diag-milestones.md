@@ -1446,3 +1446,19 @@ Resolves issue #5: DWC3 gadget child device registration failure due to duplicat
 3. **Host gates**:
    - `check-platform-device-collisions.py` and negative control fixture `platform-device-collision.diag12.dts`.
    - `verify.sh`: **246 passed, 0 failed** on both diag13 and baseline.
+
+## Candidate 13 (turn 2026-11-24): diag14 AF_UNIX / CONFIG_UNIX passwordless sudo fix
+
+Resolves issue #5: passwordless sudo on device failed with:
+`rescue@c2s$ sudo -n /bin/id -> sudo: cannot execute '/bin/id': Address family not supported by protocol (os error 97)`
+
+1. **Root cause**:
+   - sudo-rs creates an `AF_UNIX` socketpair between monitor and child process.
+   - The kernel defconfigs omitted `CONFIG_UNIX=y`.
+2. **Resolution**:
+   - Enabled `CONFIG_UNIX=y` in `c2s_rescue_diag_defconfig` and `c2s_rescue_defconfig`.
+3. **Host gates**:
+   - `require_cfg UNIX y` in `verify.sh`.
+   - Negative control ensuring unset `CONFIG_UNIX` is detected and fails.
+   - Strengthened functional sudo check in chroot for `/usr/bin/sudo -n /bin/id`.
+   - `verify.sh`: **249 passed, 0 failed** on both diag14 and baseline.

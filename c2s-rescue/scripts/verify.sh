@@ -65,12 +65,25 @@ require_cfg() {
 for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS \
          USB_CONFIGFS_ACM USB_LIBCOMPOSITE USB_U_ETHER USB_U_SERIAL USB_F_NCM \
          USB_F_RNDIS USB_F_ACM USB_DWC3 USB_DWC3_GADGET USB_DWC3_EXYNOS \
-         PHY_EXYNOS5_USBDRD NET INET DEVTMPFS TMPFS BLK_DEV_INITRD RD_GZIP \
+         PHY_EXYNOS5_USBDRD NET UNIX INET DEVTMPFS TMPFS BLK_DEV_INITRD RD_GZIP \
          BINFMT_ELF BINFMT_SCRIPT MULTIUSER UNIX98_PTYS FB FB_SIMPLE \
          FRAMEBUFFER_CONSOLE VT VT_CONSOLE INPUT INPUT_EVDEV KEYBOARD_GPIO \
          IKCONFIG IKCONFIG_PROC PRINTK_TIME; do
 	require_cfg "$s" y
 done
+# Negative control for CONFIG_UNIX gate: prove that an unset CONFIG_UNIX
+# (the pre-fix diag13 defect where sudo-rs failed with EAFNOSUPPORT / os error 97)
+# is detected and rejected by require_cfg.
+_neg_cfg=$(mktemp)
+grep -v "^CONFIG_UNIX=" "${CONFIG}" > "${_neg_cfg}"
+echo "# CONFIG_UNIX is not set" >> "${_neg_cfg}"
+_neg_out=$(CONFIG="${_neg_cfg}" require_cfg UNIX y)
+rm -f "${_neg_cfg}"
+if printf '%s\n' "${_neg_out}" | grep -q "FAIL: CONFIG_UNIX"; then
+	ok "CONFIG_UNIX negative control: unset CONFIG_UNIX is rejected (gate is sensitive)"
+else
+	bad "CONFIG_UNIX negative control failed: unset CONFIG_UNIX was not rejected: ${_neg_out}"
+fi
 require_cfg CMDLINE_FORCE y
 require_cfg PANIC_TIMEOUT 0
 # pinned release string, see the defconfig comment
@@ -998,6 +1011,13 @@ if sudo -n true > /dev/null 2>&1; then
 			ok "chroot sudo -n id as root -> uid=0(root): ${ID_OUT}"
 		else
 			bad "chroot sudo -n id failed (rc=${ID_RC}): ${ID_OUT}"
+		fi
+		ID_BIN_OUT=$(sudo chroot "${FNROOT}" /usr/bin/sudo -n /bin/id 2>&1)
+		ID_BIN_RC=$?
+		if [ ${ID_BIN_RC} -eq 0 ] && printf '%s\n' "${ID_BIN_OUT}" | grep -q 'uid=0(root)'; then
+			ok "chroot sudo -n /bin/id as root -> uid=0(root): ${ID_BIN_OUT}"
+		else
+			bad "chroot sudo -n /bin/id failed (rc=${ID_BIN_RC}): ${ID_BIN_OUT}"
 		fi
 		# Negative control: sudo must refuse to load when the setuid bit
 		# is cleared.  Without this the two checks above could pass for

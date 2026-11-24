@@ -1593,3 +1593,75 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * `fault-injection.sh`: **10 passed, 0 failed**.
 * `verify.sh`: **246 passed, 0 failed** on diag13; **246 passed, 0 failed** on baseline.
 * Platform device collision negative control: diag12 collision reproduced and detected.
+
+## Build 14 (turn 2026-11-24): diag14 CONFIG_UNIX enablement for passwordless sudo-rs
+
+Resolves issue #5 sudo defect: on hardware boot of diag13, running passwordless sudo:
+`rescue@c2s$ sudo -n /bin/id -> sudo: cannot execute '/bin/id': Address family not supported by protocol (os error 97)`
+
+### Root cause proof
+
+sudo-rs 0.2.15 creates a Unix domain socketpair (`AF_UNIX` / `AF_LOCAL`) between its monitor
+process and the executed command. In diag13, the kernel defconfig omitted `CONFIG_UNIX=y`
+(`# CONFIG_UNIX is not set`), causing `socketpair(AF_UNIX, ...)` syscall to fail with `EAFNOSUPPORT` (errno 97).
+Host qemu-user chroot testing previously succeeded because the host kernel handled the syscall with its own `CONFIG_UNIX=y`.
+
+### Fix
+
+1. Enabled `CONFIG_UNIX=y` in both `arch/arm64/configs/c2s_rescue_diag_defconfig` and `arch/arm64/configs/c2s_rescue_defconfig` alongside `CONFIG_NET=y`.
+2. Checked AF_UNIX dependencies: sudo-rs requires only `CONFIG_UNIX=y`; dropbear localoptions compile out PAM/passwords and agent forwarding; no unrelated symbols enabled.
+3. Added host gate in `c2s-rescue/scripts/verify.sh`:
+   - `require_cfg UNIX y` in kernel config checks.
+   - Negative control verifying that an unset `CONFIG_UNIX` (`# CONFIG_UNIX is not set`) is detected and rejected.
+   - Strengthened functional sudo check in chroot to verify `/usr/bin/sudo -n /bin/id`.
+
+### Build commands (build host)
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag14-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag14-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag14-out
+```
+
+Paired baseline (`CONFIG_C2S_DIAG` off) built into `/tmp/opencode/c2s-diag14-base-out`:
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag14-base-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag14-base-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag14-base-out
+```
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag14, signed) | `/tmp/opencode/c2s-diag14-out/boot.img` | 61 865 984 | `acf4099ee735924d17ced6b99c19180e6d4e74ffbdabc472907c7064dd70449f` |
+| Image (diag14) | `/tmp/opencode/c2s-diag14-out/kbuild/arch/arm64/boot/Image` | 12 876 288 | `2de054b2a11e191e5c07d125e0133cb929e69bcd5a69ec2471f9bf1d75be1d69` |
+| DTB | `/tmp/opencode/c2s-diag14-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 968 | `194ea35d91e38201ac2eea44f13c6940d43acba41dfbb91959ab25a1c5b768f2` |
+| initramfs | `/tmp/opencode/c2s-diag14-out/work/initramfs.cpio.gz` | 3 369 013 | `cd0445405f92cfdeb9efe15bb01559f50e487c62e1b93ef564063fda91975da8` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag14-base-out/boot.img` | 61 865 984 | `bc3d5a46db52970d0123f2d60ffe3ecb128d9ac6d89b93743c85a4df87935bea` |
+| Image (baseline) | `/tmp/opencode/c2s-diag14-base-out/kbuild/arch/arm64/boot/Image` | 12 743 168 | `c9271e284c396f9767c32730be5e7660acb8944b5beabfc37ffe7a0ead3e4d34` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 141 968 B == kbuild DTB.
+
+### Host evidence
+
+* `check-c-milestone-bands.py` on diag14 vmlinux: **PASS (20 milestone call site(s) verified)**.
+* `check-c-milestone-bands.py --expect-none` on baseline vmlinux: **PASS (no milestone call sites; baseline build)**.
+* `check-c2s-paint-paths.py`: **PASS (34 paint-path and console properties verified)**.
+* `check-platform-device-collisions.py`: **PASS (0 collisions across 9 merged DTBs)**.
+* `fault-injection.sh`: **10 passed, 0 failed**.
+* `verify.sh`: **249 passed, 0 failed** on diag14; **249 passed, 0 failed** on baseline.
+* `CONFIG_UNIX` negative control: unset CONFIG_UNIX rejected by require_cfg.

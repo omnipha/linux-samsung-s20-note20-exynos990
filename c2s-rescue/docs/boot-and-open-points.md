@@ -307,14 +307,14 @@ the host-side evidence cannot show:
    verification (170 gates + 5 fault cases) is necessary evidence, not
    sufficient.
 
-## Current candidate (diag13 DWC3 gadget UDC collision fix)
+## Current candidate (diag14 CONFIG_UNIX passwordless sudo fix)
 
 | Artifact | Size | sha256 |
 |---|---|---|
-| `boot.img` (diag13) | 61,865,984 B | `3ec6348cbfb7202e9ae6618dbdfd2c0df289ecccb751d7e768e30a34129f3c5e` |
-| `Image` (diag13) | 12,808,704 B | `6e299e8c73e95373a2dce8a17478453374b1f8e64b56dda8a7b429450d32a0a9` |
-| `boot.img` (baseline) | 61,865,984 B | `8b3e3de7c6d5bfde5839667b466e4ad02d0666415dd23c938f4d654c2164b11e` |
-| `Image` (baseline) | 12,677,632 B | `63bb4ec79e920dd34904b757699f702e060ef639c893242e8537612df9d727ec` |
+| `boot.img` (diag14) | 61,865,984 B | `acf4099ee735924d17ced6b99c19180e6d4e74ffbdabc472907c7064dd70449f` |
+| `Image` (diag14) | 12,876,288 B | `2de054b2a11e191e5c07d125e0133cb929e69bcd5a69ec2471f9bf1d75be1d69` |
+| `boot.img` (baseline) | 61,865,984 B | `bc3d5a46db52970d0123f2d60ffe3ecb128d9ac6d89b93743c85a4df87935bea` |
+| `Image` (baseline) | 12,743,168 B | `c9271e284c396f9767c32730be5e7660acb8944b5beabfc37ffe7a0ead3e4d34` |
 | `initramfs.cpio.gz` | 3,369,013 B | `cd0445405f92cfdeb9efe15bb01559f50e487c62e1b93ef564063fda91975da8` |
 
 Packaged with the operator's public key (fingerprint
@@ -323,8 +323,8 @@ the initramfs, proven from the image) for **both** `root` and the
 unprivileged `rescue` login account, plus a `SHA256_RSA4096` /
 rollback 13 AVB footer signed with the authorized host key.
 
-Host verification: **246 passed, 0 failed** on diag13; **246 passed, 0 failed**
+Host verification: **249 passed, 0 failed** on diag14; **249 passed, 0 failed**
 on baseline (`verify.sh`), plus 10/10 host fault-injection checks for the ACM-independent
-fallback, 34/34 paint path / console checks, and negative control platform device collision check. Nothing here demonstrates a boot, USB enumeration, serial
+fallback, 34/34 paint path / console checks, negative control platform device collision check, and negative control CONFIG_UNIX check. Nothing here demonstrates a boot, USB enumeration, serial
 console output, SSH login or `sudo -n id` on the device - those need
 the coordinator's hardware run.
