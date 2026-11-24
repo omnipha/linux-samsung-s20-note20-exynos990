@@ -1029,3 +1029,102 @@ table `d7b7ab1e`, FDT 141 867 B == kbuild DTB.
 * That the panel shows any of the C bands (hardware only).
 * Where the USB failure actually is - the ladder locates it, it does not
   fix it.
+
+## Build 8 (turn 2026-11-24): fb2 no-map, scanout discriminator, HS cap
+
+### Build commands (build host)
+
+```
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag8-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag8-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag8-out
+```
+
+The paired baseline (the same tree, `CONFIG_C2S_DIAG` off) was built the
+same way into `/tmp/opencode/c2s-diag8-base-out` and verified as well.
+
+`build.sh` exit 0; `package-bootimg.sh` exit 0; `verify.sh` exit 0 for both
+(**223 passed, 0 failed** each; build 7 had 219 - the increase is two new
+DTB gates and two new negative controls).
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag8, signed) | `/tmp/opencode/c2s-diag8-out/boot.img` | 61 865 984 | `8b3fda3012fea74c34f7ac6ae3ac1f409b2c81b0d523e40d90c381a5e577cfe0` |
+| Image (diag8) | `/tmp/opencode/c2s-diag8-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `ca3675094b22f73700b640baa209e1a6fcd07cdc2f3cc6b97bc53c05b44afce1` |
+| DTB | `/tmp/opencode/c2s-diag8-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 142 056 | `e70691b32d5b7dea0fdd44b9db93c076d419d5c1abe6faaa0fb099f06d5aeac6` |
+| initramfs | `/tmp/opencode/c2s-diag8-out/work/initramfs.cpio.gz` | 3 367 458 | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag8-base-out/boot.img` | 61 865 984 | `f45220b4edfbcc324f4a13c7fe986e1ce99940c923849915b487fc6f6cb3fb62` |
+| Image (baseline) | `/tmp/opencode/c2s-diag8-base-out/kbuild/arch/arm64/boot/Image` | 12 677 632 | `7a3e44eaaddd0e23a895cd4b82b782fe05254f466f8124cd39a9c3258dd37d87` |
+
+The initramfs is byte-identical to build 7. The DTB grew by 189 B (the new
+fb2 reservation plus `maximum-speed`). AVB: `SHA256_RSA4096`, rollback
+index **13**, Samsung DT table `d7b7ab1e`, FDT 142 056 B == kbuild DTB.
+
+### What changed
+
+* `arch/arm64/boot/dts/exynos/exynos990-c2s.dts` - **change A**: a third
+  no-map reservation `fb2_splash_mem: framebuffer@fac00000`
+  (`reg = <0x0 0xfac00000 0x10f6800>`), which is exactly the framebuffer
+  range; fb2 is no longer unreserved RAM, so `memblock_mark_nomap()` keeps
+  it out of the linear map and out of the buddy, and `ioremap_wc()` accepts
+  it. **change C**: `maximum-speed = "high-speed"` on `&usbdrd_dwc3_live`,
+  one property and nothing else.
+* `arch/arm64/kernel/c2s_diag_bands.c` - the painter was refactored into
+  `c2s_paint_early_fb()` (per buffer, chunked `early_memremap()`, ID-map
+  identity otherwise) and `c2s_kick_early()` (one DECON kick). The old
+  "skip fb2 outside the ID-map phase" rule is gone: fb2 is painted in all
+  three phases. `c2s_late_init()` now maps three buffers and logs
+  `c2s: milestone mappings incomplete: fb0=... fb1=... fb2=... decon=...`
+  if any mapping failed. New `c2s_scanout_probe()` paints one band with a
+  different colour per buffer.
+* `include/linux/c2s_diag.h` - declares `c2s_scanout_probe()` (plus a
+  no-op stub in the `#else` branch).
+* `init/main.c` - the discriminator call site right after C1:
+  `c2s_scanout_probe(1664, 0xffff0000, 0xff00ff00, 0xff0000ff)`, still in
+  the ID-map phase and before `setup_arch()`.
+* `c2s-rescue/scripts/check-c-milestone-bands.py` - the argument tracker
+  was widened from `w0`/`w1` to `w0..w3`/`x0..x3` (the discriminator is the
+  only four-argument milestone) and the expectations became positional
+  argument lists. It verifies 11 call sites now.
+* `c2s-rescue/tests/fixtures/start_kernel.scanout-wrong-row.txt` and
+  `start_kernel.scanout-wrong-colour.txt` - new negative controls.
+* `c2s-rescue/scripts/verify.sh` - two new DTB gates (fb2 `no-map`
+  reservation with the exact range; `maximum-speed = "high-speed"` on the
+  live gadget node resolved through `/__symbols__/usbdrd_dwc3_live`) and the
+  two new negative controls wired in.
+
+### Host evidence
+
+* `check-c-milestone-bands.py` on the diag8 vmlinux: **PASS (11 milestone
+  call site(s) verified)**. The discriminator call site disassembles to
+  four immediate loads, so the gate reads the real colours:
+  `mov w3, #0xff0000ff` / `mov w2, #0xff00ff00` / `mov w1, #0xffff0000` /
+  `mov w0, #0x680` then `bl <c2s_scanout_probe>`.
+* All three negative controls are rejected by the gate (wrong row 1536 ->
+  1537, wrong discriminator row 1664 -> 1665, wrong fb2 colour
+  `0xff0000ff` -> `0xff0000fe`).
+* The baseline build has zero `c2s_*` symbols and zero milestone call
+  sites; its `verify.sh` run is 223/0 as well.
+* The DT gates are checked against the *built* DTB, not the source: the fb2
+  node is found by path with `reg` cells `[0x00, 0xfac00000, 0x10f6800]`
+  and a `no-map` property, and the speed gate resolves
+  `/soc@0/usb@10e00000/usb@0` through `/__symbols__/usbdrd_dwc3_live` so it
+  cannot accidentally match the inert anchors shell that carries the
+  `usbdrd_dwc3` label.
+
+### What is still NOT proven
+
+* That the panel shows the discriminator band, or any of the C bands -
+  hardware only.
+* That `maximum-speed = "high-speed"` fixes the USB failure: it is a
+  one-variable candidate (no `usb3-phy` exists on this port, and TWRP
+  enumerates HS on the same port and cable), not a proven fix.
+

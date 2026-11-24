@@ -519,6 +519,26 @@ if [ -f "${C_MILESTONE_CHECKER}" ] && [ -x "${VBUILD}" -o -s "${VBUILD}" ]; then
 	else
 		note "no C milestone fixture at ${C_MILESTONE_FIXTURE}; negative control skipped"
 	fi
+	# Negative controls for the scanout discriminator (issue #5 change B):
+	# it is the only milestone carrying four arguments, so a gate that had
+	# not learned to read w2/w3 would accept either of these listings while
+	# still passing the real build.
+	for pair in "start_kernel.scanout-wrong-row.txt:the wrong discriminator row (1665)" \
+		"start_kernel.scanout-wrong-colour.txt:the wrong fb2 colour (blue->0xff0000fe)"; do
+		fixture_name="${pair%%:*}"; fixture_why="${pair#*:}"
+		scand_fixture="${RESCUE_DIR}/tests/fixtures/${fixture_name}"
+		if [ -s "${scand_fixture}" ]; then
+			if python3 "${C_MILESTONE_CHECKER}" --disasm-file \
+				"${scand_fixture}" --function start_kernel \
+				> /dev/null 2>&1; then
+				bad "C milestone gate negative control FAILED: ${fixture_why} was accepted"
+			else
+				ok "C milestone gate negative control: ${fixture_why} IS rejected"
+			fi
+		else
+			note "no C milestone fixture at ${scand_fixture}; negative control skipped"
+		fi
+	done
 else
 	note "C milestone checker or vmlinux missing; call-site gate skipped"
 fi
@@ -1675,6 +1695,83 @@ check "reserved-memory cells match root (2/1)" \
 	<(awk '/^[[:space:]]*reserved-memory \{/{f=1} f&&/#size-cells/{print;exit}' "${DTB_TXT}")
 check "reserved-memory children use 3-cell reg" \
 	grep -qE '<0x00 0xf1000000 0x10f6800>' "${DTB_TXT}"
+# ------------------------------------------------ issue #5 change A: fb2
+# fb2 (0xfac00000) is the third splash-scanout candidate. Without a no-map
+# reservation it is ordinary RAM: memblock hands it to the buddy, and
+# ioremap_wc() refuses to map it (pfn_is_map_memory() is true), so only the
+# ID-map phase can ever paint it - which is exactly what made "no cyan"
+# from C2 onwards prove nothing. The reservation must cover the whole
+# 1440x3088x4 buffer and must be no-map.
+PYFB2=$(python3 - "${DTB}" "${SCRIPT_DIR}/fdt.py" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[2].rsplit('/', 1)[0])
+import fdt
+root = fdt.parse(open(sys.argv[1], 'rb').read())
+want = [0x00, 0xfac00000, 0x10f6800]
+for n in root.walk():
+    if n.path == '/reserved-memory/framebuffer@fac00000':
+        cells = fdt.cells(n.prop('reg')) if n.prop('reg') is not None else []
+        if cells != want:
+            print('BAD fb2 reg = %s, want %s' %
+                  (' '.join('%#x' % c for c in cells),
+                   ' '.join('%#x' % c for c in want)))
+            sys.exit(1)
+        if n.prop('no-map') is None:
+            print('BAD fb2 reservation lacks no-map (memblock would own it)')
+            sys.exit(1)
+        print('OK fb2 no-map reservation 0xfac00000..0xfbcf6800 present')
+        sys.exit(0)
+print('BAD reserved-memory/framebuffer@fac00000 missing from DTB')
+sys.exit(1)
+PYEOF
+)
+if [ "${PYFB2#OK*}" != "${PYFB2}" ]; then
+	ok "DTB ${PYFB2#OK }"
+else
+	bad "DTB ${PYFB2#BAD }"
+fi
+# ------------------------------------------------ issue #5 change C: speed
+# Only usb2-phy exists on this port (no usb3-phy anywhere in the tree), so
+# a SUPER/SUPER_PLUS gadget cannot link; TWRP enumerates HS on the same
+# port and cable. Resolve the node through /__symbols__/usbdrd_dwc3_live so
+# the gate proves the property landed on the *live* gadget node and not on
+# the inert anchors shell that carries the usbdrd_dwc3 label.
+PYUSBSPEED=$(python3 - "${DTB}" "${SCRIPT_DIR}/fdt.py" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[2].rsplit('/', 1)[0])
+import fdt
+root = fdt.parse(open(sys.argv[1], 'rb').read())
+syms = root.kid('__symbols__')
+live_path = fdt.s(syms.prop('usbdrd_dwc3_live')) if syms is not None else None
+if not live_path:
+    print('BAD no /__symbols__/usbdrd_dwc3_live')
+    sys.exit(1)
+live = None
+for n in root.walk():
+    if n.path == live_path:
+        live = n
+        break
+if live is None:
+    print('BAD live gadget node %s not found' % live_path)
+    sys.exit(1)
+speed = fdt.s(live.prop('maximum-speed')) if live.prop('maximum-speed') else None
+dr = fdt.s(live.prop('dr_mode')) if live.prop('dr_mode') else None
+if speed != 'high-speed':
+    print('BAD %s maximum-speed = %r, want "high-speed"'
+          % (live_path, speed))
+    sys.exit(1)
+if dr != 'peripheral':
+    print('BAD %s dr_mode = %r, want "peripheral"' % (live_path, dr))
+    sys.exit(1)
+print('OK %s caps at high-speed (dr_mode = peripheral)' % live_path)
+sys.exit(0)
+PYEOF
+)
+if [ "${PYUSBSPEED#OK*}" != "${PYUSBSPEED}" ]; then
+	ok "DTB ${PYUSBSPEED#OK }"
+else
+	bad "DTB ${PYUSBSPEED#BAD }"
+fi
 check "reg_dummy supply on usbdrd" \
 	grep -q "vdd10-supply" "${DTB_TXT}"
 # sboot's libufdt overlay step requires /__symbols__ in the main DTB;

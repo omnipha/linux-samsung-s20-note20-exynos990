@@ -848,3 +848,239 @@ Image. AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table
 * The dwc3/exynos root cause behind the USB failure is still not proven
   from sources - this candidate *locates* the failure in the ladder, it
   does not fix it.
+
+## Candidate 7 (turn 2026-11-24): fb2 no-map, scanout discriminator, HS cap
+
+Candidate 6 was flashed and photographed. The panel showed the five asm
+bands plus a solid **yellow** band (C1, row 640) and **no cyan and no later
+band**; the USB monitor saw only a TWRP disconnect. On its own that reads as
+"the kernel died right after `start_kernel()` entered", but it is not
+conclusive, and this candidate exists to make it conclusive.
+
+### The C2 visibility limitation (why "no cyan" proved nothing)
+
+Every C band from C2 (row 768) upwards was painted through
+`early_memremap()`/`ioremap_wc()` into **fb0 and fb1 only**. fb2
+(`0xfac00000`) was unreserved RAM: `ioremap_wc()` refuses to map RAM
+(`pfn_is_map_memory()` is true there), and `early_memremap()` cannot reach
+it either once the page allocator owns it. C1 was different - it is painted
+in the **ID-map phase**, where the physical address *is* the virtual
+address, and the ID map covers all three buffers - which is exactly why
+yellow was visible and everything after it was not.
+
+So the candidate-6 photo had two possible readings:
+
+* the kernel really did die between C1 and C2 (inside `setup_arch()`), or
+* the kernel walked all the way to the USB stage and every band it painted
+  went into a buffer the DECON never scans out (fb2), so nothing appeared.
+
+Nothing in the photo could separate those two. Worse, the second case makes
+*every* later milestone invisible, so "no cyan" carried **no information at
+all** about how far the kernel got. A further class of causes (an
+`early_memremap()` failure, an `early_ioremap()` DECON-kick failure, a hang
+inside `setup_arch()`, fbcon overwriting the rows) was equally consistent
+with the picture and is not separately distinguishable either.
+
+Three changes make the next readout unambiguous.
+
+### Change A: reserve fb2 as `no-map`
+
+`arch/arm64/boot/dts/exynos/exynos990-c2s.dts` gains a third reservation
+next to the existing splash and audio ones:
+
+```
+fb2_splash_mem: framebuffer@fac00000 {
+	reg = <0x0 0xfac00000 0x10f6800>;
+	no-map;
+};
+```
+
+The range matches the framebuffer exactly (`1440 * 3088 * 4 = 0x10f6800`)
+and does not overlap the audio reservation (which ends at `0xfaa00000`).
+The effect on the kernel is verified in the sources, not assumed:
+
+* `early_init_dt_reserve_memory()` (`drivers/of/of_reserved_mem.c:125`)
+  calls `memblock_mark_nomap()` on the isolated sub-range, so
+  `memblock_is_map_memory()` (`mm/memblock.c:2031`) returns false and
+  `pfn_is_map_memory()` is false - `ioremap_wc()` is legal there.
+* `map_mem()` (`arch/arm64/mm/mmu.c:1136`) and
+  `free_low_memory_core_early()` (`mm/memblock.c:2383`) both skip `nomap`
+  ranges through `should_skip_region()` (`mm/memblock.c:1263`), so fb2 is
+  absent from the linear map, never handed to the buddy, and is marked
+  `PageReserved` by `memmap_init_reserved_range()`.
+* The reservation is applied inside `arm64_memblock_init()`
+  (`arch/arm64/mm/init.c:297`), i.e. **before** `paging_init()`
+  (`arch/arm64/kernel/setup.c:334`).
+
+fb2 is therefore painted in **all three phases** (ID map, `early_memremap`,
+`ioremap_wc`) exactly like fb0 and fb1. If the reservation is ever dropped
+from the DT, `ioremap_wc()` refuses to map RAM again, `c2s_late_init()` logs
+`c2s: milestone mappings incomplete: ... fb2=<nil>` and only the ID-map
+phase still paints fb2 - the fallback is documented in the source comment.
+
+### Change B: the scanout discriminator (rows 1664..1791)
+
+The five asm markers and the whole C ladder paint the **same** colour into
+**all three** buffers, so a photo can never tell which buffer the DECON
+actually scans out. Change B paints one band with a different colour per
+buffer, so the panel itself answers the question:
+
+| buffer | physical base | colour | meaning if visible |
+|---|---|---|---|
+| fb0 | `0xf1000000` | red `0xffff0000` | the DECON scans the simplefb splash buffer |
+| fb1 | `0xf9800000` | green `0xff00ff00` | the DECON scans the lk3rd LOGO window |
+| fb2 | `0xfac00000` | blue `0xff0000ff` | the DECON scans the lk3rd FONT window |
+
+The band sits at rows 1664..1791 - the first free row after C7 ends at
+1663 - and is painted in the **ID-map phase**, right after C1 and before
+`setup_arch()`, with a single DECON kick after all three buffers are
+written. Row 1664 was chosen by the coordinator; the only hard constraint
+is that it does not overlap an existing band.
+
+Consequences for the readout:
+
+* **red** at row 1664 -> fb0 is the scanout source; C2 and later are now
+  painted into fb0 as well, so their absence means the kernel really did
+  not reach them.
+* **green** -> fb1; **blue** -> fb2. In the blue case the candidate-6
+  photo is explained ("the kernel did run, the bands went to fb2") and the
+  ladder is still valid, but every later band stays invisible in fb0/fb1.
+* **no band at all** at 1664 -> the DECON did not scan any of the three
+  buffers, or the paint never reached DRAM. That is itself a result, and it
+  rules out the "fb2 only" reading.
+
+### Change C: cap the gadget at high-speed
+
+`&usbdrd_dwc3_live` gains one property:
+
+```
+maximum-speed = "high-speed";
+```
+
+Mechanism, from the sources:
+
+* `usb_get_maximum_speed()` (`drivers/usb/common/common.c:114`) returns
+  `USB_SPEED_UNKNOWN` when the property is absent.
+* `dwc3/core.c:1949` then replaces that unknown with a value derived from
+  `hwparam_gen()` - a *hardware* parameter, which the DT cannot influence.
+  If it resolves to `USB_SPEED_SUPER`/`SUPER_PLUS`,
+  `__dwc3_gadget_set_speed()` (`drivers/usb/dwc3/gadget.c:2592`) writes
+  `DWC3_DCFG_SUPERSPEED`.
+* With `maximum-speed = "high-speed"` (the string is in `speed_names[]`,
+  `drivers/usb/common/common.c:75`) the value is `USB_SPEED_HIGH`, and
+  `dwc3/core.c:1935` takes `case USB_SPEED_HIGH: break;`, i.e. it leaves
+  the DCFG speed field at `DCFG_HIGHSPEED` (`gadget.c:2589`).
+* `dwc->gadget_max_speed` is the minimum of the controller's and the
+  gadget's maximum speed, so the device is capped at HS.
+
+Why HS is the right cap on this port: the live node has
+`phys = <&usbdrd_phy 0>; phy-names = "usb2-phy";` and **no `usb3-phy`
+exists anywhere in the tree** - there is no SuperSpeed path to negotiate
+on, while TWRP enumerates HS on the same port and cable. No other quirk
+property was added, so the variable under test is a single one.
+
+This is a **candidate** one-variable fix for the USB failure, not a proven
+fix: whether the USB problem is the speed negotiation at all is still
+unknown (`exynos5_rate_to_clk()`/`dummy_reg` enable semantics and a
+possible deferred UDC registration remain open candidates).
+
+### The ladder after this candidate
+
+| milestone | rows | colour (AARRGGBB) | where | mapping |
+|---|---|---|---|---|
+| C1 `start_kernel()` entry | 640..767 | yellow `0xffffff00` | first statement of `start_kernel()` | boot ID map, all three buffers |
+| **D1 scanout discriminator** | **1664..1791** | **red / green / blue per buffer** | **after C1, still in the ID-map phase** | **boot ID map, one DECON kick** |
+| C2 `setup_arch()` done | 768..895 | cyan `0xff00ffff` | after `setup_arch()` returns | `early_memremap()`, all three buffers |
+| C3 `console_init()` done | 896..1023 | orange `0xffffa500` | after `console_init()` | `early_memremap()`, all three buffers |
+| C4 UDC registered | 1024..1151 | pale blue `0xffadd8e6` | `usb_add_gadget()` success | `ioremap_wc()`, all three buffers |
+| C5 `/init` exec attempted | 1152..1279 | pink `0xffffc0cb`, dark red `0xff8b0000` on failure | `run_init_process()` | `ioremap_wc()`, all three buffers |
+| C6 gadget bound | 1280..1407 | lime `0xff32cd32` | `gadget_bind_driver()` success | `ioremap_wc()`, all three buffers |
+| C6 gadget bind failed | 1408..1535 | salmon `0xfffa8072` | `gadget_bind_driver()` `err_bind` path | `ioremap_wc()`, all three buffers |
+| C7 netdev carrier on | 1536..1663 | spring green `0xff00ff7f` | `gether_connect()` after `netif_carrier_on()` | `ioremap_wc()`, all three buffers |
+
+The ladder is unchanged; only the set of buffers each band reaches has
+changed (all three now) and the discriminator band has been added.
+
+### Ownership of the three buffers (verified, not assumed)
+
+| buffer | range | owner | who writes it |
+|---|---|---|---|
+| fb0 | `0xf1000000..0xf20f6800` | `reserved-memory/framebuffer@f1000000` (exactly this range) | our bands; simplefb/fbcon map the same range |
+| fb1 | `0xf9800000..0xfa8f6800` | **fully inside** `reserved-memory/audio@f7fb0000` (`0xf7fb0000..0xfaa00000`, `no-map`) | our bands; this is lk3rd's LOGO window (`CONFIG_DISPLAY_LOGO_BASE_ADDRESS`) |
+| fb2 | `0xfac00000..0xfbcf6800` | `reserved-memory/framebuffer@fac00000` (new, `no-map`) | our bands; lk3rd's FONT window (`CONFIG_DISPLAY_FONT_BASE_ADDRESS`) |
+
+fb1 has no dedicated reservation of its own: it lies entirely inside the
+vendor audio reservation, which is `no-map` and therefore never
+allocator-owned. Writing there is safe in this tree (neither defconfig
+enables an A-Box/SND driver that could use the region), but the ownership
+is *inferred* from lk3rd's build-time constants, not from a dedicated fb1
+reservation - the change list did not authorise adding one.
+
+### Host-verified evidence (candidate 7)
+
+* Build (diag): `C2S_DEFCONFIG=c2s_rescue_diag_defconfig
+  C2S_AUTHORIZED_KEYS=$HOME/.ssh/id_ed25519.pub
+  C2S_OUTDIR=/tmp/opencode/c2s-diag8-out build.sh`, exit 0.
+* `verify.sh /tmp/opencode/c2s-diag8-out`: **223 passed, 0 failed**
+  (candidate 6 had 219; the increase is two new DTB gates and two new
+  negative controls).
+* **Call-site gate now reads four arguments.** `c2s_scanout_probe()` is
+  the only milestone with more than two arguments, so the gate's argument
+  tracker was widened from `w0`/`w1` to `w0..w3`/`x0..x3` and its
+  expectations became positional argument lists. The gate verifies
+  **11** call sites now (11 = 10 from candidate 6 plus the discriminator).
+* **Gate negative controls** (all three must be rejected):
+  `gether_connect.wrong-row.txt` (row 1536 -> 1537),
+  `start_kernel.scanout-wrong-row.txt` (discriminator row 1664 -> 1665) and
+  `start_kernel.scanout-wrong-colour.txt` (fb2 colour `0xff0000ff` ->
+  `0xff0000fe`). The two new ones matter because a gate that had not
+  learned to read `w2`/`w3` would have accepted them while still passing
+  the real build.
+* **New DTB gates**: the fb2 reservation must be present with exactly
+  `<0x00 0xfac00000 0x10f6800>` **and** a `no-map` property, and the live
+  gadget node (resolved through `/__symbols__/usbdrd_dwc3_live`, not by
+  name matching) must carry `maximum-speed = "high-speed"` and
+  `dr_mode = "peripheral"`.
+* **Compile-out control**: the paired baseline build
+  (`/tmp/opencode/c2s-diag8-base-out`, `CONFIG_C2S_DIAG` off) has **zero**
+  `c2s_band`/`c2s_late_init`/`c2s_scanout_probe` symbols, carries no
+  milestone call sites, and its `verify.sh` run is **223 passed, 0 failed**
+  as well. The DT changes (A and C) are in the baseline too, by design: they
+  are fixes, not diagnostics.
+* Modpost is clean; `c2s_scanout_probe()` sits in `.init.text` next to
+  `c2s_band_early()`.
+
+### Artefacts (candidate 7, diag)
+
+| Artefact | Path | Size (B) | sha256 |
+|---|---|---|---|
+| boot.img (signed, candidate 7) | `/tmp/opencode/c2s-diag8-out/boot.img` | 61 865 984 | `8b3fda3012fea74c34f7ac6ae3ac1f409b2c81b0d523e40d90c381a5e577cfe0` |
+| Image (diag8) | `/tmp/opencode/c2s-diag8-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `ca3675094b22f73700b640baa209e1a6fcd07cdc2f3cc6b97bc53c05b44afce1` |
+| DTB | `/tmp/opencode/c2s-diag8-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 142 056 | `e70691b32d5b7dea0fdd44b9db93c076d419d5c1abe6faaa0fb099f06d5aeac6` |
+| initramfs | `/tmp/opencode/c2s-diag8-out/work/initramfs.cpio.gz` | 3 367 458 | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
+
+The initramfs is byte-identical to candidate 6 (no initramfs change). The
+DTB grew by 189 B: the new fb2 reservation plus the `maximum-speed`
+property. AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table
+`d7b7ab1e` ok, FDT 142 056 B == kbuild DTB.
+
+### Artefacts (candidate 7, paired baseline)
+
+| Artefact | Path | Size (B) | sha256 |
+|---|---|---|---|
+| boot.img (signed, baseline) | `/tmp/opencode/c2s-diag8-base-out/boot.img` | 61 865 984 | `f45220b4edfbcc324f4a13c7fe986e1ce99940c923849915b487fc6f6cb3fb62` |
+| Image (baseline) | `/tmp/opencode/c2s-diag8-base-out/kbuild/arch/arm64/boot/Image` | 12 677 632 | `7a3e44eaaddd0e23a895cd4b82b782fe05254f466f8124cd39a9c3258dd37d87` |
+
+### Still open
+
+* Everything about the panel remains host-unverified: the discriminator
+  band, the C2..C7 bands and the USB enumeration all need the coordinator's
+  hardware run.
+* The root cause of the USB failure is still not proven from sources.
+  Change C is a one-variable **candidate**; if the panel shows C4..C7 but
+  the host still sees no NCM/ACM/SSH, the HS cap is exonerated.
+* fbcon may overwrite C bands at rows >= 640 if the console ever renders;
+  no console text has appeared on the panel so far.
+* fb1's ownership is inherited from the vendor audio reservation (see the
+  table above); no dedicated fb1 reservation was added.
+

@@ -77,6 +77,22 @@
 			no-map;
 		};
 
+		/*
+		 * Second splash-scanout candidate (see c2s_diag_bands.c).
+		 * fb0 and fb1 already live in no-map reservations, so the
+		 * C-level ladder could paint them after mm_core_init() while
+		 * fb2 stayed ID-map-only: if DECON scans fb2 then every band
+		 * from C2 on was invisible regardless of how far the kernel
+		 * got, which is the ambiguity the diag7 photo showed (C1
+		 * present, C2 absent).  no-map takes 17 MiB of 12 GiB out of
+		 * memblock - memblock never owns it, so painting it at any
+		 * point after setup_arch() is allocator-safe.
+		 */
+		fb2_splash_mem: framebuffer@fac00000 {
+			reg = <0x0 0xfac00000 0x10f6800>;
+			no-map;
+		};
+
 		abox_reserved: audio@f7fb0000 {
 			reg = <0x0 0xf7fb0000 0x2a50000>;
 			no-map;
@@ -153,6 +169,36 @@
  */
 &usbdrd_dwc3_live {
 	dr_mode = "peripheral";
+	/*
+	 * Issue #5 change C - pin the gadget to high-speed, one variable.
+	 *
+	 * The live node carries only the usb2-phy:
+	 *   phys = <&usbdrd_phy 0>;  phy-names = "usb2-phy";
+	 * There is no usb3-phy anywhere in this device tree, so a
+	 * SuperSpeed link can never be brought up on this port.
+	 *
+	 * With no "maximum-speed" property, usb_get_maximum_speed()
+	 * (drivers/usb/common/common.c:114) returns USB_SPEED_UNKNOWN, and
+	 * dwc3/core.c:1949 then replaces it from hwparam_gen() - a hardware
+	 * parameter, not something the DT can influence.  If that resolves
+	 * to USB_SPEED_SUPER / SUPER_PLUS, __dwc3_gadget_set_speed() writes
+	 * DCFG_SUPERSPEED (drivers/usb/dwc3/gadget.c:2592) and the
+	 * controller arms itself for a USB 3 link the DT never gave it a
+	 * PHY for.
+	 *
+	 * TWRP enumerates on this same port and cable as high-speed, so
+	 * "high-speed" is the speed the hardware has already proven.
+	 * usb_get_maximum_speed() matches the string against speed_names[]
+	 * (drivers/usb/common/common.c:75), where "high-speed" is
+	 * USB_SPEED_HIGH, and dwc3's switch then takes the
+	 * case USB_SPEED_HIGH: break; branch (dwc3/core.c:1935), leaving
+	 * DCFG at DCFG_HIGHSPEED (drivers/usb/dwc3/gadget.c:2589) instead
+	 * of DCFG_SUPERSPEED.
+	 *
+	 * Only this one property is changed here; no vendor quirk
+	 * properties are added alongside it.
+	 */
+	maximum-speed = "high-speed";
 };
 
 &usbdrd_phy {

@@ -1034,6 +1034,15 @@ void start_kernel(void)
 	 * continues directly below it on the panel.
 	 */
  	c2s_band_early(640, 0xffffff00);
+	/*
+	 * Issue #5 change B - scanout discriminator.  Painted in the same
+	 * ID-map phase, one kick after all three buffers are written, at
+	 * rows 1664..1791 (the first free row after C7's 1536..1663): fb0
+	 * red, fb1 green, fb2 blue.  The panel then names the buffer the
+	 * DECON scans out, which is what makes "no cyan" from C2 onwards
+	 * mean something at all.
+	 */
+	c2s_scanout_probe(1664, 0xffff0000, 0xff00ff00, 0xff0000ff);
 #endif
 
 	set_task_stack_end_magic(&init_task);

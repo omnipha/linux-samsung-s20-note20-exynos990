@@ -73,10 +73,16 @@
  *    they are absent from the linear map (map_mem() skips nomap), and
  *    pfn_is_map_memory() is false for them: safe to write and to ioremap()
  *    at any time.
- *  - 0xfac00000 (fb2) is *unreserved plain RAM* in the 0xe1900000..0x100000000
- *    bank.  It is in the linear map, but memblock may allocate from it as
- *    soon as arm64_memblock_init() has run, so it is painted only while the
- *    ID-map phase is active; both entry points skip it afterwards.
+ *  - 0xfac00000 (fb2) is the third splash-scanout candidate.  It used to be
+ *    unreserved RAM, so only the ID-map phase could paint it - which made
+ *    every band from C2 on invisible if the DECON happens to scan fb2, and
+ *    that ambiguity made "no cyan" prove nothing at all.  It is now reserved
+ *    by reserved-memory/framebuffer@fac00000 { no-map } in
+ *    exynos990-c2s.dts, so memblock never owns it either and fb2 is painted
+ *    in all three phases like fb0/fb1.  If that reservation is ever dropped
+ *    from the DT, ioremap_wc() refuses to map RAM, the late path skips fb2
+ *    (see c2s_late_init()'s per-buffer pr_err) and only the ID-map phase
+ *    still paints it.
  */
 
 #include <linux/c2s_diag.h>
@@ -100,6 +106,19 @@
  * pages, which is SZ_256K on every arm64 page size.
  */
 #define C2S_MAP_CHUNK		SZ_256K
+
+/*
+ * Scanout discriminator band (issue #5 change B).  The five asm markers and
+ * the C ladder all paint the *same* colour into all three splash buffers, so
+ * a photo can never tell which buffer the DECON actually scans out.  Painting
+ * a different colour per buffer at one row makes the answer obvious: red
+ * means fb0, green means fb1, blue means fb2.  That is what turns "C2 is
+ * missing" from an uninterpretable result into a real signal.
+ */
+#define C2S_SCANOUT_ROW		1664U		/* rows 1664..1791 */
+#define C2S_SCANOUT_COLOUR_FB0	0xffff0000U	/* red    */
+#define C2S_SCANOUT_COLOUR_FB1	0xff00ff00U	/* green  */
+#define C2S_SCANOUT_COLOUR_FB2	0xff0000ffU	/* blue   */
 
 #define C2S_DECON_PHYS		0x19050000UL
 #define C2S_DECON_REG_GLOBAL	0x00
@@ -172,58 +191,53 @@ static void c2s_decon_kick(void __iomem *decon)
 }
 
 /*
- * Early path - __init only, see the header comment.  Handles the ID-map
- * phase and the early_*remap phase; both give cacheable memory.
+ * Paint one framebuffer's share of one band.  Shared by the uniform band
+ * path (every buffer the same colour) and the scanout probe (one colour per
+ * buffer), so the colour is an argument.  Marked __init because it reaches
+ * early_memremap(), which lives in .init.text.
+ *
+ * Returns false if a mapping was refused, so the caller can abandon the
+ * whole band rather than leave a half-painted one on the panel.
  */
-void __init c2s_band_early(u32 row, u32 colour)
+static bool __init c2s_paint_early_fb(unsigned int fb,
+				      unsigned long band_off,
+				      u32 colour, bool idmap)
 {
-	unsigned long band_off = (unsigned long)row * C2S_FB_STRIDE;
-	bool idmap = c2s_idmap_alive();
-	void *vaddr;
-	unsigned int fb;
+	unsigned long pos = 0;
 
-	if (band_off + C2S_BAND_BYTES > C2S_FB_SIZE)
-		return;
+	while (pos < C2S_BAND_BYTES) {
+		unsigned long phys = c2s_fb_phys[fb] + band_off + pos;
+		unsigned long align_off = offset_in_page(phys);
+		unsigned long paint = min(C2S_BAND_BYTES - pos,
+					  C2S_MAP_CHUNK - align_off);
+		unsigned long map_len = ALIGN(align_off + paint, PAGE_SIZE);
+		void *p;
 
-	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_phys); fb++) {
-		unsigned long pos = 0;
+		if (idmap)
+			p = (void *)(phys & PAGE_MASK);
+		else
+			p = early_memremap(phys & PAGE_MASK, map_len);
 
-		/*
-		 * 0xfac00000 is unreserved RAM; once arm64_memblock_init()
-		 * has run, memblock may hand it out.  Only the ID-map phase,
-		 * which is strictly before that, may touch it.
-		 */
-		if (fb == 2 && !idmap)
-			continue;
+		if (!p)
+			return false;
 
-		while (pos < C2S_BAND_BYTES) {
-			unsigned long phys = c2s_fb_phys[fb] + band_off + pos;
-			unsigned long align_off = offset_in_page(phys);
-			unsigned long paint = min(C2S_BAND_BYTES - pos,
-						  C2S_MAP_CHUNK - align_off);
-			unsigned long map_len = ALIGN(align_off + paint,
-						      PAGE_SIZE);
-			void *p;
+		c2s_fill_band((u8 *)p + align_off, paint, colour);
+		dcache_clean_inval_poc((unsigned long)p + align_off,
+				       (unsigned long)p + align_off + paint);
 
-			if (idmap)
-				p = (void *)(phys & PAGE_MASK);
-			else
-				p = early_memremap(phys & PAGE_MASK, map_len);
+		if (!idmap)
+			early_memunmap(p, map_len);
 
-			if (!p)
-				return;
-
-			c2s_fill_band((u8 *)p + align_off, paint, colour);
-			dcache_clean_inval_poc((unsigned long)p + align_off,
-					       (unsigned long)p + align_off +
-					       paint);
-
-			if (!idmap)
-				early_memunmap(p, map_len);
-
-			pos += paint;
-		}
+		pos += paint;
 	}
+
+	return true;
+}
+
+/* One DECON0 shadow update, reached either through the ID map or a fixmap. */
+static void __init c2s_kick_early(bool idmap)
+{
+	void *vaddr;
 
 	if (idmap)
 		vaddr = (void *)C2S_DECON_PHYS;
@@ -238,19 +252,73 @@ void __init c2s_band_early(u32 row, u32 colour)
 }
 
 /*
+ * Early path - __init only, see the header comment.  Handles the ID-map
+ * phase and the early_*remap phase; both give cacheable memory.
+ */
+void __init c2s_band_early(u32 row, u32 colour)
+{
+	unsigned long band_off = (unsigned long)row * C2S_FB_STRIDE;
+	bool idmap = c2s_idmap_alive();
+	unsigned int fb;
+
+	if (band_off + C2S_BAND_BYTES > C2S_FB_SIZE)
+		return;
+
+	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_phys); fb++)
+		if (!c2s_paint_early_fb(fb, band_off, colour, idmap))
+			return;
+
+	c2s_kick_early(idmap);
+}
+
+/*
+ * Scanout discriminator - issue #5 change B.  Paints one band with a
+ * different colour in each splash buffer, then refreshes the panel once, so
+ * a single photo names the buffer the DECON actually scans out:
+ *
+ *   red   -> fb0 (0xf1000000, reserved-memory/framebuffer@f1000000)
+ *   green -> fb1 (0xf9800000, inside reserved-memory/audio@f7fb0000)
+ *   blue  -> fb2 (0xfac00000, reserved-memory/framebuffer@fac00000)
+ *
+ * Called in the ID-map phase, immediately after C1 in start_kernel(), so it
+ * runs while all three buffers are identity-mapped and before the page
+ * allocator exists.  Row and colours come from the call site on purpose:
+ * they are what the check-c-milestone-bands.py gate reads back out of the
+ * disassembly, so a band silently moved or recoloured cannot pass verify.
+ */
+void __init c2s_scanout_probe(u32 row, u32 c_fb0, u32 c_fb1, u32 c_fb2)
+{
+	unsigned long band_off = (unsigned long)row * C2S_FB_STRIDE;
+	bool idmap = c2s_idmap_alive();
+	const u32 colours[3] = { c_fb0, c_fb1, c_fb2 };
+	unsigned int fb;
+
+	if (band_off + C2S_BAND_BYTES > C2S_FB_SIZE)
+		return;
+
+	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_phys); fb++)
+		if (!c2s_paint_early_fb(fb, band_off, colours[fb], idmap))
+			return;
+
+	c2s_kick_early(idmap);
+}
+
+/*
  * Long-lived mappings, taken by c2s_late_init() from process context after
- * mm_core_init().  Only fb0 and fb1: 0xfac00000 is unreserved RAM, and
- * ioremap_wc() refuses to map RAM (pfn_is_map_memory() is true there), so
- * that buffer stays ID-map only.
+ * mm_core_init().  All three splash buffers are mapped: fb0 and fb1 live in
+ * no-map reservations, fb2 does too since the DT reserved it with no-map
+ * (before that it was unreserved RAM, and ioremap_wc() refuses to map RAM -
+ * pfn_is_map_memory() is true there - so only the ID-map phase could paint
+ * it, which made every band from C2 on invisible if the DECON scanned fb2).
  *
  * ioremap_wc() (PROT_NORMAL_NC) is deliberate: simplefb maps the very same
  * physical range with ioremap_wc() (drivers/video/fbdev/simplefb.c:602), so
  * our alias carries the same memory type as the one fbcon writes through.
  * A cacheable alias of the same range would be a mismatched-attribute
- * alias of an NC region; the plain stores through the NC alias reach
+ * alias of an NC range; the plain stores through the NC alias reach
  * memory directly, and mb() orders them against the DECON MMIO.
  */
-static void __iomem *c2s_fb_map[2];
+static void __iomem *c2s_fb_map[ARRAY_SIZE(c2s_fb_phys)];
 static void __iomem *c2s_decon_map;
 
 /*
@@ -275,7 +343,7 @@ void __init c2s_late_init(void)
 {
 	unsigned int fb;
 
-	if (c2s_fb_map[0] || c2s_fb_map[1])
+	if (c2s_fb_map[0])
 		return;
 
 	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++)
@@ -285,14 +353,18 @@ void __init c2s_late_init(void)
 	INIT_WORK(&c2s_kick_work, c2s_kick_work_fn);
 
 	/*
-	 * A failed mapping would make every late milestone invisible, which
-	 * on the panel is indistinguishable from "the USB path never got
-	 * that far".  Say so in the log instead of leaving a silent hole in
-	 * the ladder.
+	 * A failed mapping would make every late milestone invisible in that
+	 * buffer, which on the panel is indistinguishable from "the USB path
+	 * never got that far".  Say so in the log instead of leaving a silent
+	 * hole in the ladder.  All three buffers are mapped: fb2 became
+	 * legal to ioremap_wc() once the DT reserved it with no-map (before
+	 * that it was RAM and __ioremap_prot() refuses RAM).
 	 */
-	if (!c2s_fb_map[0] || !c2s_fb_map[1] || !c2s_decon_map)
-		pr_err("c2s: milestone mappings incomplete: fb0=%p fb1=%p decon=%p\n",
-		       c2s_fb_map[0], c2s_fb_map[1], c2s_decon_map);
+	if (!c2s_fb_map[0] || !c2s_fb_map[1] || !c2s_fb_map[2] ||
+	    !c2s_decon_map)
+		pr_err("c2s: milestone mappings incomplete: fb0=%p fb1=%p fb2=%p decon=%p\n",
+		       c2s_fb_map[0], c2s_fb_map[1], c2s_fb_map[2],
+		       c2s_decon_map);
 }
 
 /*
@@ -305,9 +377,6 @@ void c2s_band(u32 row, u32 colour)
 	unsigned int fb;
 
 	if (band_off + C2S_BAND_BYTES > C2S_FB_SIZE)
-		return;
-
-	if (!c2s_fb_map[0] && !c2s_fb_map[1])
 		return;
 
 	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++) {

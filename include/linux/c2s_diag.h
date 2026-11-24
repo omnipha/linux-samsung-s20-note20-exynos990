@@ -24,17 +24,23 @@
  * c2s_band() then allocates nothing and never sleeps - fill, cache clean,
  * DECON kick - so it is callable from atomic context (interrupts/BH
  * disabled, spinlock held) as well as from initcalls and run_init_process().
- * It is a no-op until c2s_late_init() has run, and it never touches
- * 0xfac00000: that buffer is unreserved RAM owned by the page allocator
- * from mm_core_init() on, and ioremap_wc() refuses to map RAM.
+ * It is a no-op until c2s_late_init() has run.
+ *
+ * c2s_scanout_probe() paints one band with a *different* colour per splash
+ * buffer, so a single photo of the panel names the buffer the DECON scans
+ * out: red = fb0, green = fb1, blue = fb2.  It runs in the boot ID-map
+ * phase, where all three buffers are identity-mapped.
  */
 void __init c2s_band_early(u32 row, u32 colour);
+void __init c2s_scanout_probe(u32 row, u32 c_fb0, u32 c_fb1, u32 c_fb2);
 void __init c2s_late_init(void);
 void c2s_band(u32 row, u32 colour);
 
 #else /* CONFIG_C2S_DIAG */
 
 static inline void c2s_band_early(u32 row, u32 colour) { }
+static inline void c2s_scanout_probe(u32 row, u32 c_fb0, u32 c_fb1,
+				     u32 c_fb2) { }
 static inline void c2s_late_init(void) { }
 static inline void c2s_band(u32 row, u32 colour) { }
 

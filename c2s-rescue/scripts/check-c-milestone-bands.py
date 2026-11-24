@@ -15,11 +15,13 @@ such call sites at all, so the diagnostic cannot leak into the USB baseline.
 
 Rows are the ladder position in the 1440x3088 panel (the asm ladder owns
 rows 0..639, the C ladder continues at row 640), colour is the a8r8g8b8
-value written to each framebuffer.
+value written to each framebuffer.  The scanout discriminator
+(c2s_scanout_probe) carries one colour per splash buffer, so expectations
+are positional argument lists rather than a fixed (row, colour) pair.
 
 Exit codes:
-  0  every expected call site present with the expected row and colour
-  1  at least one site missing / wrong row / wrong colour  <-- regression
+  0  every expected call site present with the expected arguments
+  1  at least one site missing / wrong argument               <-- regression
   2  usage / tooling error
 """
 
@@ -28,29 +30,40 @@ import re
 import subprocess
 import sys
 
-# function -> [(callee, expected row, expected colour), ...]
-# The row order is the *execution* order of the milestones, which for the
-# /init failure case is two paint paths over the same row.
+# function -> [(callee, expected argument tuple), ...]
+# Arguments are positional and match the callee's prototype:
+#   c2s_band_early(u32 row, u32 colour)          -> (row, colour)
+#   c2s_scanout_probe(u32 row, c0, c1, c2)       -> (row, fb0, fb1, fb2)
+#   c2s_band(u32 row, u32 colour)                -> (row, colour)
+#   c2s_late_init(void)                          -> ()
+# An expectation lists only the arguments this gate pins; extra arguments
+# of a call site are ignored.  The order is the *execution* order of the
+# milestones, which for the /init failure case is two paint paths over the
+# same row.
 EXPECTED = {
     "start_kernel": [
-        ("c2s_band_early", 640, 0xFFFFFF00),
-        ("c2s_band_early", 768, 0xFF00FFFF),
-        ("c2s_band_early", 896, 0xFFFFA500),
-        ("c2s_late_init", None, None),
+        ("c2s_band_early", (640, 0xFFFFFF00)),
+        # Issue #5 change B - the scanout discriminator sits between C1 and
+        # C2, in the same ID-map phase: fb0 red, fb1 green, fb2 blue at
+        # rows 1664..1791.
+        ("c2s_scanout_probe", (1664, 0xFFFF0000, 0xFF00FF00, 0xFF0000FF)),
+        ("c2s_band_early", (768, 0xFF00FFFF)),
+        ("c2s_band_early", (896, 0xFFFFA500)),
+        ("c2s_late_init", ()),
     ],
     "usb_add_gadget": [
-        ("c2s_band", 1024, 0xFFADD8E6),
+        ("c2s_band", (1024, 0xFFADD8E6)),
     ],
     "run_init_process": [
-        ("c2s_band", 1152, 0xFFFFC0CB),
-        ("c2s_band", 1152, 0xFF8B0000),
+        ("c2s_band", (1152, 0xFFFFC0CB)),
+        ("c2s_band", (1152, 0xFF8B0000)),
     ],
     "gadget_bind_driver": [
-        ("c2s_band", 1280, 0xFF32CD32),
-        ("c2s_band", 1408, 0xFFFA8072),
+        ("c2s_band", (1280, 0xFF32CD32)),
+        ("c2s_band", (1408, 0xFFFA8072)),
     ],
     "gether_connect": [
-        ("c2s_band", 1536, 0xFF00FF7F),
+        ("c2s_band", (1536, 0xFF00FF7F)),
     ],
 }
 
@@ -65,12 +78,35 @@ CALL_RE = re.compile(r"^bl\s+[0-9a-f]+ <(c2s_[a-z_]+)>$")
 #   w1, #0xffad, lsl #16
 # objdump prints ARM MOVZ/MOVN/MOVK under their `mov`/`movk` aliases with the
 # fully resolved value, so reading the immediate gives the value as written.
-MOV_IMM_RE = re.compile(r"^(w[01]), #0x([0-9a-f]+)")
-MOVK_IMM_RE = re.compile(r"^(w[01]), #0x([0-9a-f]+), lsl #(\d+)")
+# Both the 32-bit (wN) and 64-bit (xN) spellings are tracked: AAPCS64 passes
+# a u32 argument in the low 32 bits of x0..x3, and a 64-bit immediate like
+# `mov x1, #0x10000000000000` must clobber the tracked value rather than be
+# read as `mov` whose "#0x" the caller ignores.
+MOV_IMM_RE = re.compile(r"^([wx][0-3]), #0x([0-9a-f]+)")
+# `, lsl #N` is omitted by objdump when the shift is zero
+# (`movk x3, #0xcccd`), so it has to be optional.
+MOVK_IMM_RE = re.compile(r"^([wx][0-3]), #0x([0-9a-f]+)(?:, lsl #(\d+))?")
 
-# The two argument registers c2s_band(0/1) and c2s_band_early(0/1) use.
-ROW_REG = "w0"
-COLOUR_REG = "w1"
+# Argument registers read by the milestone callees, normalised to rN so that
+# wN and xN alias without special-casing every access.
+ARG_COUNT = 4
+
+# Registers whose value the milestone callees read as their arguments.
+ARG_REGS = {"r%d" % i for i in range(ARG_COUNT)} | \
+           {"%s%d" % (p, i) for p in "wx" for i in range(ARG_COUNT)}
+
+
+def _norm_reg(name):
+    """Map a wN/xN operand onto the abstract register name rN (or None)."""
+    if len(name) == 2 and name[0] in "rwx" and name[1] in "0123":
+        return "r" + name[1]
+    return None
+
+
+def _reg_32(value):
+    """The low 32 bits, which is all AAPCS64 guarantees for a u32 argument."""
+    return value & 0xFFFFFFFF
+
 
 # Instructions whose first operand reads rather than writes it, so they must
 # not be mistaken for a clobber of the register we are tracking.
@@ -126,12 +162,8 @@ def read_disasm_file(path, function):
     return "\n".join(keep) if keep else None
 
 
-# Registers whose value the milestone callees read as (row, colour).
-ARG_REGS = {"w0", "w1", "x0", "x1"}
-
-
 def _writes_arg_reg(mnemonic, rest):
-    """Return the destination register if this insn writes w0/w1/x0/x1.
+    """Return the normalised register if this insn writes one of r0..r3.
 
     Any writer other than an immediate `mov`/`movk` invalidates the value
     we track: `adrp x0, ...` or `add x0, ...` would otherwise leave a stale
@@ -146,17 +178,19 @@ def _writes_arg_reg(mnemonic, rest):
     if head in ARG_REGS:
         if mnemonic in ("mov", "movk") and "#0x" in rest:
             return None                    # handled by the caller
-        return head
+        return _norm_reg(head)
     return None
 
 
 def call_sites(disasm_text):
-    """Yield (callee, row, colour, addr) for every milestone call found.
+    """Yield (callee, argument tuple, addr) for every milestone call found.
 
     Arguments are tracked forwards and reset at every `bl` (the callee
-    clobbers the argument registers), and each individual w0/w1/x0/x1 write
-    that is not an immediate `mov` clears the register so a value from
-    another statement can never be picked up.
+    clobbers the argument registers), and each individual write to r0..r3
+    that is not an immediate `mov`/`movk` clears the register so a value
+    from another statement can never be picked up.  The yielded tuple is
+    (r0, r1, r2, r3) with None for a register whose value could not be
+    tracked - the caller decides how many of them an expectation pins.
     """
     parsed = []
     for line in disasm_text.splitlines():
@@ -172,32 +206,59 @@ def call_sites(disasm_text):
         if mnemonic == "mov":
             mm = MOV_IMM_RE.match(rest)
             if mm:
-                regs[mm.group(1)] = int(mm.group(2), 16) & 0xFFFFFFFF
+                key = _norm_reg(mm.group(1))
+                if key:
+                    regs[key] = _reg_32(int(mm.group(2), 16))
                 continue
         elif mnemonic == "movk":
             mm = MOVK_IMM_RE.match(rest)
-            if mm and mm.group(1) in regs:
-                shift = int(mm.group(3))
-                val = int(mm.group(2), 16)
-                cur = regs[mm.group(1)]
-                mask = 0xFFFF << shift
-                regs[mm.group(1)] = (cur & ~mask) | (val << shift)
+            if mm:
+                key = _norm_reg(mm.group(1))
+                if key and key in regs:
+                    shift = int(mm.group(3) or 0)
+                    val = int(mm.group(2), 16)
+                    mask = (0xFFFF << shift) & 0xFFFFFFFF
+                    regs[key] = (regs[key] & ~mask | (val << shift)) & \
+                        0xFFFFFFFF
+                    continue
+                if key:
+                    # half of an immediate built from an unknown base
+                    regs.pop(key, None)
                 continue
 
         clobber = _writes_arg_reg(mnemonic, rest)
         if clobber:
-            # x0/x1 alias w0/w1
             regs.pop(clobber, None)
-            regs.pop("w" + clobber[-1], None)
 
         if mnemonic == "bl":
             cm = CALL_RE.match("%s %s" % (mnemonic, rest))
             if cm:
-                row = regs.get(ROW_REG)
-                colour = regs.get(COLOUR_REG)
-                sites.append((cm.group(1), row, colour, addr))
+                args = tuple(regs.get("r%d" % i) for i in range(ARG_COUNT))
+                sites.append((cm.group(1), args, addr))
             regs = {}
     return sites
+
+
+def _fmt_args(args, expected=None):
+    """Render an argument tuple for a failure message."""
+    out = []
+    for i, value in enumerate(args):
+        if expected is not None and i < len(expected) and \
+                expected[i] is None:
+            out.append("-")
+            continue
+        out.append("-" if value is None else hex(value))
+    return "(%s)" % ", ".join(out)
+
+
+def _matches(args, expected):
+    """Positional match: every pinned argument must be present and equal."""
+    for i, want in enumerate(expected):
+        if want is None:
+            continue
+        if i >= len(args) or args[i] is None or args[i] != want:
+            return False
+    return True
 
 
 def main():
@@ -236,7 +297,7 @@ def main():
             continue
 
         sites = call_sites(text)
-        found = [(c, r, col) for (c, r, col, _a) in sites]
+        found = [(callee, argv) for (callee, argv, _a) in sites]
 
         if args.expect_none:
             if found:
@@ -250,30 +311,27 @@ def main():
 
         # Match expectations in order; each expectation consumes one site.
         remaining = list(found)
-        for (callee, row, colour) in expected:
+        for (callee, want) in expected:
             total += 1
             hit = None
-            for i, (c, r, col) in enumerate(remaining):
-                if c != callee:
+            for i, (site_callee, site_args) in enumerate(remaining):
+                if site_callee != callee:
                     continue
-                if row is not None and r != row:
-                    continue
-                if colour is not None and col != colour:
+                if not _matches(site_args, want):
                     continue
                 hit = i
                 break
             if hit is None:
                 failures.append(
-                    "%s: missing %s(row=%s colour=%s); found %s"
-                    % (fn, callee, row,
-                       hex(colour) if colour is not None else "-",
-                       found or "no call sites"))
+                    "%s: missing %s%s; found %s"
+                    % (fn, callee, _fmt_args(want),
+                       [_fmt_args(a) for _c, a in found] or "no call sites"))
             else:
                 remaining.pop(hit)
 
         if remaining:
             failures.append("%s: unexpected extra call site(s): %s"
-                            % (fn, remaining))
+                            % (fn, [_fmt_args(a) for _c, a in remaining]))
 
     if args.expect_none:
         if failures:
