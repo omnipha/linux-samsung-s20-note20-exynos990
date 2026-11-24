@@ -1387,3 +1387,45 @@ userspace phases:
   control for K2 row (1184 -> 1185) and wired into `verify.sh`.
 * `c2s-rescue/scripts/verify.sh`: dropbear PID read updated for unprivileged runner under
   root smoke mode. **231 passed, 0 failed** on both diag11 and baseline builds.
+
+## Candidate 11 (turn 2026-11-24): diag12 panel text console (independent kernel dmesg console)
+
+diag12 delivers a self-contained panel text console that directly displays the kernel log
+(`dmesg`) on the panel, independent of simplefb and fbcon:
+1. **Console driver (`c2s_diag_console`)**:
+   - Registered from `c2s_late_init()` once long-lived mappings (`c2s_fb_map` / `c2s_fb_linear`,
+     cache clean to PoC, DECON kick) are established.
+   - Flags: `CON_PRINTBUFFER | CON_ENABLED | CON_ANYTIME` (replays all log messages buffered before
+     registration; does NOT set `CON_BOOT` so it remains active even if another console registers).
+2. **Font rendering and layout**:
+   - Uses in-kernel `font_vga_8x16` (`lib/fonts/fonts.c`) scaled 2x to 16x32 pixel cells.
+   - 1440x3088 panel: 90 columns x 96 rows.
+   - Colors: White text (`0xffffffff`) on black background (`0xff000000`).
+   - Paints across all mapped splash buffers (fb0, fb1, fb2).
+3. **Screen clearing, scrolling, and cache/hardware synchronization**:
+   - Clear panel to solid black (`0xff000000`) at initial registration.
+   - Scroll by moving rows 1..95 up by 32 rows (`memmove`) and clearing bottom row.
+   - Zero allocations in write path; safe in atomic/IRQ context (`raw_spin_trylock_irqsave` during oops).
+   - Writes are pushed with `dcache_clean_inval_poc()` on cacheable buffers (fb2) and synchronized
+     via `mb()` and synchronous `c2s_decon_kick()` on DECON0 MMIO.
+4. **Milestone band neutralization**:
+   - Subsequent `c2s_band()` and `c2s_band_32()` calls check `c2s_console_registered` and return early
+     to avoid overwriting the text display.
+5. **Boot behavior and cmdline**:
+   - CMDLINE force includes `loglevel=8`, `ignore_loglevel`, `panic=0`, `panic_on_oops=1`, and `CONFIG_PANIC_TIMEOUT=0`.
+   - On kernel panic, the screen remains frozen with the panic output visible indefinitely.
+6. **Userspace stage logging**:
+   - `/init` and `/usr/lib/c2s-gadget.sh` write each stage result to `/dev/kmsg` (and `/dev/console` if present),
+     including return codes and error status.
+
+### Gate changes
+
+* `c2s-rescue/scripts/check-c2s-paint-paths.py`: Added `check_console()` testing console struct,
+  flags (`CON_PRINTBUFFER`, no `CON_BOOT`), font reference, synchronous DECON kick, `memmove`,
+  and neutralization. Negative control fixtures added: `c2s_diag_bands.no-console-registration.txt`
+  and `c2s_diag_bands.no-font-ref.txt` (both proven rejected).
+* `c2s-rescue/scripts/check-c-milestone-bands.py`: Added `MILESTONE_CALLEES` filtering to distinguish
+  milestone call sites from internal helpers (`c2s_decon_kick`).
+* `c2s-rescue/scripts/verify.sh`: Added `PANIC_TIMEOUT 0` requirement, cmdline options checks,
+  negative controls, and `vmlinux` symbol checks for `c2s_diag_console` and `c2s_console_write`.
+  **244 passed, 0 failed** on diag12; **245 passed, 0 failed** on baseline.

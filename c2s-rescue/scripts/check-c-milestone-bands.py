@@ -102,6 +102,11 @@ EXPECTED = {
 # Every function that must be scanned for the baseline negative case.
 ALL_FUNCTIONS = list(EXPECTED)
 
+# Callees that represent milestone bands or milestone progression markers.
+# Internal hardware helpers (e.g. c2s_decon_kick) or text console functions
+# are not milestone call sites and are ignored.
+MILESTONE_CALLEES = {callee for list_ in EXPECTED.values() for callee, _ in list_}
+
 INSN_RE = re.compile(r"^([0-9a-f]{8,}):\s+([0-9a-f]+)\s+(\S+)\s*(.*)$")
 CALL_RE = re.compile(r"^bl\s+[0-9a-f]+ <(c2s_[a-z0-9_]+)>$")
 # The operand part of the argument-building instructions, e.g.
@@ -264,7 +269,7 @@ def call_sites(disasm_text):
 
         if mnemonic == "bl":
             cm = CALL_RE.match("%s %s" % (mnemonic, rest))
-            if cm:
+            if cm and cm.group(1) in MILESTONE_CALLEES:
                 args = tuple(regs.get("r%d" % i) for i in range(ARG_COUNT))
                 sites.append((cm.group(1), args, addr))
             regs = {}

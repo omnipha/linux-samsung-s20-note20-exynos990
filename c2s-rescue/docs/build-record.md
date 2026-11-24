@@ -1439,3 +1439,64 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * Negative controls: all 6 rejected (`kernel_init.wrong-row.txt`, `c2s_late_init.wrong-row.txt`,
   `setup_arch.s3-wrong-row.txt`, `start_kernel.scanout-wrong-colour.txt`,
   `start_kernel.scanout-wrong-row.txt`, `gether_connect.wrong-row.txt`).
+
+## Build 12 (turn 2026-11-24): diag12 panel text console (independent kernel dmesg console)
+
+Implements milestone diag12: a self-contained panel text console directly registered
+from `c2s_late_init()` using in-kernel font `font_vga_8x16` scaled 2x to 16x32 pixel cells
+(90 columns x 96 rows) on a8r8g8b8 panel buffers (stride 5760). Registered with `CON_PRINTBUFFER`
+to replay all prior `printk()` logs. Clears screen to black on registration, scrolls with `memmove`,
+maintains cache to PoC, kicks DECON synchronously, and neutralizes post-registration milestone
+bands (`c2s_band` and `c2s_band_32`). Includes kernel cmdline options `loglevel=8`, `ignore_loglevel`,
+`panic=0`, `panic_on_oops=1`, and `CONFIG_PANIC_TIMEOUT=0`. Userspace `/init` and `c2s-gadget.sh`
+log each stage to `/dev/kmsg` and `/dev/console`.
+
+### Build commands (build host)
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag12-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag12-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag12-out
+```
+
+Paired baseline (`CONFIG_C2S_DIAG` off) built into `/tmp/opencode/c2s-diag12-base-out`:
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag12-base-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag12-base-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag12-base-out
+```
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag12, signed) | `/tmp/opencode/c2s-diag12-out/boot.img` | 61 865 984 | `e641d6575b9763822fcf19c063d09e4b3a3981e5e13f69509f7504d6fa13cdee` |
+| Image (diag12) | `/tmp/opencode/c2s-diag12-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `6e299e8c73e95373a2dce8a17478453374b1f8e64b56dda8a7b429450d32a0a9` |
+| DTB | `/tmp/opencode/c2s-diag12-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 142 044 | `68e5f8ca89d33230eff26cce7b97e6496574c5894c74dd07249d54f2e5be242b` |
+| initramfs | `/tmp/opencode/c2s-diag12-out/work/initramfs.cpio.gz` | 3 369 013 | `cd0445405f92cfdeb9efe15bb01559f50e487c62e1b93ef564063fda91975da8` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag12-base-out/boot.img` | 61 865 984 | `48f3632df2a4cd66a0749002a729c2aee96f1b95fa61f7ba5b70bfa1dd829040` |
+| Image (baseline) | `/tmp/opencode/c2s-diag12-base-out/kbuild/arch/arm64/boot/Image` | 12 677 632 | `63bb4ec79e920dd34904b757699f702e060ef639c893242e8537612df9d727ec` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 142 044 B == kbuild DTB.
+
+### Host evidence
+
+* `check-c-milestone-bands.py` on diag12 vmlinux: **PASS (20 milestone call site(s) verified)**.
+* `check-c-milestone-bands.py --expect-none` on baseline vmlinux: **PASS (no milestone call sites; baseline build)**.
+* `check-c2s-paint-paths.py`: **PASS (34 paint-path and console properties verified)**.
+* `fault-injection.sh`: **10 passed, 0 failed**.
+* `verify.sh`: **244 passed, 0 failed** on diag12; **245 passed, 0 failed** on baseline.
+* Console negative controls: console registration removal rejected, font reference removal rejected.

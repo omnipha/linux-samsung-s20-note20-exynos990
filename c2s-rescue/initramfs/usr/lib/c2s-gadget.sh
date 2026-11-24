@@ -134,7 +134,10 @@ c2s_glog() {
         return 0
     fi
     if [ -w "${KMSG:-/dev/kmsg}" ]; then
-        echo "c2s-rescue: $*" > "${KMSG}" 2> /dev/null && return 0
+        echo "c2s-rescue: $*" > "${KMSG:-/dev/kmsg}" 2> /dev/null
+    fi
+    if [ -w /dev/console ]; then
+        echo "c2s-rescue: $*" > /dev/console 2> /dev/null
     fi
     echo "c2s-rescue: $*"
 }
@@ -202,10 +205,11 @@ c2s_gadget_setup() {
     # rescue console exists even when the network functions cannot be set
     # up. NCM/RNDIS never allocate a gserial line, so ACM is always ttyGS0.
     if ! mkdir -p "${cfg}/functions/acm.usb2"; then
+        _ret=$?
         C2S_GADGET_STAGE="acm-instance-fail"
         c2s_band_stage u2 0xff008040
         c2s_glog "gadget stage=${C2S_GADGET_STATUS}:${C2S_GADGET_STAGE}" \
-                 "cannot create the ACM function instance - no rescue console"
+                 "cannot create the ACM function instance (ret=${_ret}) - no rescue console"
         return "${C2S_GADGET_STATUS}"
     fi
     # Make the console binding explicit (idempotent: gs_console_init()
@@ -213,16 +217,17 @@ c2s_gadget_setup() {
     # configfs attribute only exists with CONFIG_U_SERIAL_CONSOLE.
     echo 1 > "${cfg}/functions/acm.usb2/console" 2> /dev/null || true
     if ! ln -s "${cfg}/functions/acm.usb2" "${cfg}/configs/c.1/" 2> /dev/null; then
+        _ret=$?
         C2S_GADGET_STAGE="acm-link-fail"
         c2s_band_stage u2 0xff008040
         c2s_glog "gadget stage=${C2S_GADGET_STATUS}:${C2S_GADGET_STAGE}" \
-                 "cannot link the ACM function - no rescue console"
+                 "cannot link the ACM function (ret=${_ret}) - no rescue console"
         return "${C2S_GADGET_STATUS}"
     fi
     C2S_GADGET_LINKED="acm.usb2"
     c2s_band_stage u2 0xff00ff80
     c2s_glog "gadget stage=${C2S_GADGET_STATUS}:acm-linked" \
-             "ACM console function linked (ttyGS0 console registered)"
+             "ACM console function linked (ttyGS0 console registered, ret=0)"
 
     # --------------------------------------------------- NCM / RNDIS (optional)
     # Each network function is attempted on its own; a failure only drops
@@ -235,12 +240,13 @@ c2s_gadget_setup() {
         C2S_GADGET_LINKED="${C2S_GADGET_LINKED} ncm.usb0"
         c2s_band_stage u3 0xff0080ff
         c2s_glog "gadget stage=${C2S_GADGET_STATUS}:ncm-linked" \
-                 "NCM linked into the same gadget (single UDC)"
+                 "NCM linked into the same gadget (single UDC, ret=0)"
     else
+        _ret=$?
         rm -rf "${cfg}/functions/ncm.usb0" 2> /dev/null
         c2s_band_stage u3 0xff004080
         c2s_glog "gadget stage=${C2S_GADGET_STATUS}:ncm-skipped" \
-                 "NCM setup failed; continuing with ACM" \
+                 "NCM setup failed (ret=${_ret}); continuing with ACM" \
                  "on the single UDC"
     fi
 
@@ -250,12 +256,13 @@ c2s_gadget_setup() {
         C2S_GADGET_LINKED="${C2S_GADGET_LINKED} rndis.usb1"
         c2s_band_stage u4 0xffff0080
         c2s_glog "gadget stage=${C2S_GADGET_STATUS}:rndis-linked" \
-                 "RNDIS linked into the same gadget (single UDC)"
+                 "RNDIS linked into the same gadget (single UDC, ret=0)"
     else
+        _ret=$?
         rm -rf "${cfg}/functions/rndis.usb1" 2> /dev/null
         c2s_band_stage u4 0xff800040
         c2s_glog "gadget stage=${C2S_GADGET_STATUS}:rndis-skipped" \
-                 "RNDIS setup failed; continuing with ACM" \
+                 "RNDIS setup failed (ret=${_ret}); continuing with ACM" \
                  "on the single UDC"
     fi
 
@@ -293,10 +300,11 @@ c2s_gadget_setup() {
         C2S_GADGET_UDC="${_udc}"
         c2s_band_stage u5 0xffff8000
         c2s_glog "gadget stage=${C2S_GADGET_STATUS}:${C2S_GADGET_STAGE}" \
-                 "udc=${_udc} linked=[${C2S_GADGET_LINKED}]"
+                 "udc=${_udc} linked=[${C2S_GADGET_LINKED}] bind success (ret=0)"
     else
+        _ret=$?
         c2s_glog "gadget stage=${C2S_GADGET_STATUS}:bind-failed-full" \
-                 "bind with [${C2S_GADGET_LINKED}] failed on ${_udc};" \
+                 "bind with [${C2S_GADGET_LINKED}] failed on ${_udc} (ret=${_ret});" \
                  "falling back to ACM only"
         for _f in "${cfg}/configs/c.1/ncm.usb0" "${cfg}/configs/c.1/rndis.usb1"; do
             [ -L "${_f}" ] && rm -f "${_f}"
@@ -308,14 +316,15 @@ c2s_gadget_setup() {
             C2S_GADGET_UDC="${_udc}"
             c2s_band_stage u5 0xffff8000
             c2s_glog "gadget stage=${C2S_GADGET_STATUS}:${C2S_GADGET_STAGE}" \
-                     "udc=${_udc} linked=[${C2S_GADGET_LINKED}]" \
+                     "udc=${_udc} linked=[${C2S_GADGET_LINKED}] fallback bind success (ret=0)" \
                      "- network functions dropped, console channel up"
         else
+            _ret=$?
             C2S_GADGET_STATUS=3
             C2S_GADGET_STAGE="bind-failed-all"
             c2s_band_stage u5 0xff804000
             c2s_glog "gadget stage=${C2S_GADGET_STATUS}:${C2S_GADGET_STAGE}" \
-                     "all bind attempts failed on ${_udc};" \
+                     "all bind attempts failed on ${_udc} (ret=${_ret});" \
                      "NOTHING enumerated (functions linked but not bound)"
             return "${C2S_GADGET_STATUS}"
         fi

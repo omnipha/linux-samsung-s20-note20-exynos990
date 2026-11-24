@@ -307,15 +307,15 @@ the host-side evidence cannot show:
    verification (170 gates + 5 fault cases) is necessary evidence, not
    sufficient.
 
-## Current candidate (diag11 stage bands K1-K4 & U1-U5, fbcon enabled)
+## Current candidate (diag12 panel text console, independent dmesg on panel)
 
 | Artifact | Size | sha256 |
 |---|---|---|
-| `boot.img` (diag11) | 61,865,984 B | `97c57b61864dcff6f39a99aae36f3685fae710579026c39452241eaa1c5ad3ca` |
-| `Image` (diag11) | 12,808,704 B | `555382c9732ec0335e33486c4fcafb48bc4d9fae1dad76f63070fdd1d5b9399c` |
-| `boot.img` (baseline) | 61,865,984 B | `ee64346be73c3b158422766e21c70a650a8e2f5ddd61901239db4acd45485111` |
-| `Image` (baseline) | 12,677,632 B | `70c0c673d1c61ad0383aede97313fc21a6f47c8302b0447142dfe28479a8ef8d` |
-| `initramfs.cpio.gz` | 3,368,927 B | `0442b7815dc02f7ca52222b5b9985dd8ec1b31d61f733fe11b20021f66d95df7` |
+| `boot.img` (diag12) | 61,865,984 B | `e641d6575b9763822fcf19c063d09e4b3a3981e5e13f69509f7504d6fa13cdee` |
+| `Image` (diag12) | 12,808,704 B | `6e299e8c73e95373a2dce8a17478453374b1f8e64b56dda8a7b429450d32a0a9` |
+| `boot.img` (baseline) | 61,865,984 B | `48f3632df2a4cd66a0749002a729c2aee96f1b95fa61f7ba5b70bfa1dd829040` |
+| `Image` (baseline) | 12,677,632 B | `63bb4ec79e920dd34904b757699f702e060ef639c893242e8537612df9d727ec` |
+| `initramfs.cpio.gz` | 3,369,013 B | `cd0445405f92cfdeb9efe15bb01559f50e487c62e1b93ef564063fda91975da8` |
 
 Packaged with the operator's public key (fingerprint
 `SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE`, mode 0600 inside
@@ -323,8 +323,8 @@ the initramfs, proven from the image) for **both** `root` and the
 unprivileged `rescue` login account, plus a `SHA256_RSA4096` /
 rollback 13 AVB footer signed with the authorized host key.
 
-Host verification: **231 passed, 0 failed** (`verify.sh`, on both diag11
-and baseline), plus 10/10 host fault-injection checks for the ACM-independent
-fallback. Nothing here demonstrates a boot, USB enumeration, serial
+Host verification: **244 passed, 0 failed** on diag12; **245 passed, 0 failed**
+on baseline (`verify.sh`), plus 10/10 host fault-injection checks for the ACM-independent
+fallback and 34/34 paint path / console checks. Nothing here demonstrates a boot, USB enumeration, serial
 console output, SSH login or `sudo -n id` on the device - those need
 the coordinator's hardware run.

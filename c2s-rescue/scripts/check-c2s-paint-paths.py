@@ -345,6 +345,74 @@ def check_bands(text):
     return failures, ok
 
 
+def check_console(text):
+    """Properties that must hold for the panel text console (diag12, issue #5)."""
+    failures = []
+    ok = []
+
+    def need(cond, good, bad):
+        if cond:
+            ok.append(good)
+        else:
+            failures.append(bad)
+
+    late = function_body(text, "c2s_late_init")
+    if late is None:
+        failures.append("c2s_late_init: function not found")
+    else:
+        need(re.search(r"register_console\(\s*&\s*c2s_diag_console\s*\)", late) is not None,
+             "c2s_late_init: registers the panel text console",
+             "c2s_late_init: does not call register_console(&c2s_diag_console)")
+
+    need("struct console c2s_diag_console" in text,
+         "c2s_diag_console: struct console is defined",
+         "c2s_diag_console: struct console not defined")
+    need("CON_PRINTBUFFER" in text,
+         "c2s_diag_console: CON_PRINTBUFFER is set (log replayed at registration)",
+         "c2s_diag_console: CON_PRINTBUFFER not set")
+    need("CON_BOOT" not in text,
+         "c2s_diag_console: CON_BOOT is NOT set (console not dropped when another registers)",
+         "c2s_diag_console: CON_BOOT is set - console would be dropped")
+
+    need("font_vga_8x16" in text,
+         "c2s_draw_char: references in-kernel font_vga_8x16",
+         "c2s_draw_char: does not reference font_vga_8x16 font")
+
+    write_fn = function_body(text, "c2s_console_write")
+    if write_fn is None:
+        failures.append("c2s_console_write: function not found")
+    else:
+        need("c2s_decon_kick" in write_fn,
+             "c2s_console_write: kicks DECON synchronously in write path",
+             "c2s_console_write: no c2s_decon_kick in write path")
+
+    scroll_fn = function_body(text, "c2s_console_scroll")
+    if scroll_fn is None:
+        failures.append("c2s_console_scroll: function not found")
+    else:
+        need("memmove(" in scroll_fn,
+             "c2s_console_scroll: scrolls using memmove within mapped buffers",
+             "c2s_console_scroll: memmove not found in scroll path")
+
+    b1 = function_body(text, "c2s_band")
+    if b1 is None:
+        failures.append("c2s_band: function not found")
+    else:
+        need("c2s_console_registered" in b1,
+             "c2s_band: neutralized when console is registered",
+             "c2s_band: not guarded on c2s_console_registered")
+
+    b2 = function_body(text, "c2s_band_32")
+    if b2 is None:
+        failures.append("c2s_band_32: function not found")
+    else:
+        need("c2s_console_registered" in b2,
+             "c2s_band_32: neutralized when console is registered",
+             "c2s_band_32: not guarded on c2s_console_registered")
+
+    return failures, ok
+
+
 def check_setup(text):
     """Properties that must hold in arch/arm64/kernel/setup.c."""
     failures = []
@@ -429,6 +497,9 @@ def main():
     ap.add_argument("--bands-c-only", action="store_true",
                     help="check only the painter (used with a fixture for "
                          "the negative control)")
+    ap.add_argument("--console-c-only", action="store_true",
+                    help="check only the panel text console (used with a fixture for "
+                         "the negative control)")
     args = ap.parse_args()
 
     failures = []
@@ -437,11 +508,24 @@ def main():
     bands = read(args.bands_c)
     if bands is None:
         return 2
-    f, o = check_bands(bands)
-    failures += ["%s: %s" % (args.bands_c, x) for x in f]
-    total_ok += len(o)
 
-    if not args.bands_c_only:
+    if args.console_c_only:
+        f, o = check_console(bands)
+        failures += ["%s: %s" % (args.bands_c, x) for x in f]
+        total_ok += len(o)
+    elif args.bands_c_only:
+        f, o = check_bands(bands)
+        failures += ["%s: %s" % (args.bands_c, x) for x in f]
+        total_ok += len(o)
+    else:
+        f, o = check_bands(bands)
+        failures += ["%s: %s" % (args.bands_c, x) for x in f]
+        total_ok += len(o)
+
+        f_con, o_con = check_console(bands)
+        failures += ["%s: %s" % (args.bands_c, x) for x in f_con]
+        total_ok += len(o_con)
+
         setup = read(args.setup_c)
         if setup is None:
             return 2
@@ -454,7 +538,7 @@ def main():
             print("FAIL: %s" % x)
         print("RESULT: FAIL (%d problem(s))" % len(failures))
         return 1
-    print("RESULT: PASS (%d paint-path propert%s verified)"
+    print("RESULT: PASS (%d paint-path/console propert%s verified)"
           % (total_ok, "y" if total_ok == 1 else "ies"))
     return 0
 

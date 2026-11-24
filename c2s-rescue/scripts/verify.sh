@@ -72,6 +72,7 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
 	require_cfg "$s" y
 done
 require_cfg CMDLINE_FORCE y
+require_cfg PANIC_TIMEOUT 0
 # pinned release string, see the defconfig comment
 require_cfg LOCALVERSION "-c2s-rescue"
 if grep -q "^CONFIG_LOCALVERSION_AUTO=y" "${CONFIG}" 2> /dev/null; then
@@ -600,12 +601,66 @@ if [ -f "${PAINT_PATH_CHECKER}" ]; then
 	else
 		note "no setup.c fixture at ${PAINT_PATH_SETUP_FIXTURE}; negative control skipped"
 	fi
+	# Console negative controls (diag12): registration and font reference
+	# must both be required, otherwise a broken console path could pass.
+	CONSOLE_NO_REG_FIXTURE="${RESCUE_DIR}/tests/fixtures/c2s_diag_bands.no-console-registration.txt"
+	if [ -s "${CONSOLE_NO_REG_FIXTURE}" ]; then
+		if python3 "${PAINT_PATH_CHECKER}" --console-c-only \
+			--bands-c "${CONSOLE_NO_REG_FIXTURE}" > /dev/null 2>&1; then
+			bad "panel console gate negative control FAILED: console registration removal was accepted"
+		else
+			ok "panel console gate negative control: console registration removal IS rejected"
+		fi
+	else
+		note "no console fixture at ${CONSOLE_NO_REG_FIXTURE}; negative control skipped"
+	fi
+	CONSOLE_NO_FONT_FIXTURE="${RESCUE_DIR}/tests/fixtures/c2s_diag_bands.no-font-ref.txt"
+	if [ -s "${CONSOLE_NO_FONT_FIXTURE}" ]; then
+		if python3 "${PAINT_PATH_CHECKER}" --console-c-only \
+			--bands-c "${CONSOLE_NO_FONT_FIXTURE}" > /dev/null 2>&1; then
+			bad "panel console gate negative control FAILED: font reference removal was accepted"
+		else
+			ok "panel console gate negative control: font reference removal IS rejected"
+		fi
+	else
+		note "no font fixture at ${CONSOLE_NO_FONT_FIXTURE}; negative control skipped"
+	fi
 	# The source must still be there at all: a gate that silently reads
 	# nothing would pass vacuously.
 	check "paint path gate reads the real painter" \
 		test -s "${PAINT_PATH_SOURCE}"
 else
 	note "paint path checker missing; mapping-path gate skipped"
+fi
+
+# ---------------------------------------- panel text console (issue #5, diag12)
+section "panel text console (diag12, issue #5)"
+if [ -x "${VBUILD}" ] || [ -s "${VBUILD}" ]; then
+	if [ "${DIAG_MODE}" = on ]; then
+		if aarch64-linux-gnu-nm "${VBUILD}" 2>/dev/null | grep "c2s_diag_console" >/dev/null; then
+			ok "diagnostic vmlinux carries c2s_diag_console struct console"
+		else
+			bad "diagnostic vmlinux lacks c2s_diag_console symbol"
+		fi
+		if aarch64-linux-gnu-nm "${VBUILD}" 2>/dev/null | grep "c2s_console_write" >/dev/null; then
+			ok "diagnostic vmlinux carries c2s_console_write text function"
+		else
+			bad "diagnostic vmlinux lacks c2s_console_write symbol"
+		fi
+	else
+		if aarch64-linux-gnu-nm "${VBUILD}" 2>/dev/null | grep "c2s_diag_console" >/dev/null; then
+			bad "baseline vmlinux carries c2s_diag_console (must be free of console)"
+		else
+			ok "baseline vmlinux carries no c2s_diag_console symbol"
+		fi
+		if aarch64-linux-gnu-nm "${VBUILD}" 2>/dev/null | grep "c2s_console_write" >/dev/null; then
+			bad "baseline vmlinux carries c2s_console_write (must be free of console)"
+		else
+			ok "baseline vmlinux carries no c2s_console_write symbol"
+		fi
+	fi
+else
+	note "vmlinux not present in ${KBUILD}; panel console symbol gate skipped"
 fi
 
 # ------------------------------------------------- console font (issue #4)
@@ -639,6 +694,18 @@ if grep -q "TER16x32" "${IMG_STRINGS}"; then
 else
 	bad "TER16x32 font not found in the Image"
 fi
+for opt in "loglevel=8" "ignore_loglevel" "panic=0" "panic_on_oops=1"; do
+	if grep -q "${opt}" "${CONFIG}"; then
+		ok "CONFIG_CMDLINE contains ${opt}"
+	else
+		bad "CONFIG_CMDLINE lacks ${opt}"
+	fi
+	if grep -q "${opt}" "${IMG_STRINGS}"; then
+		ok "Image embeds ${opt} in its command line"
+	else
+		bad "Image command line lacks ${opt}"
+	fi
+done
 
 # ------------------------------------------ USB serial console (issue #4)
 # The rescue channel must be readable without the network and without a

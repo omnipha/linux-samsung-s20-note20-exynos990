@@ -137,10 +137,14 @@
 
 #include <linux/c2s_diag.h>
 #include <linux/bitops.h>
+#include <linux/console.h>
+#include <linux/font.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/minmax.h>
 #include <linux/sizes.h>
+#include <linux/spinlock.h>
+#include <linux/string.h>
 #include <linux/workqueue.h>
 #include <asm/cacheflush.h>
 #include <asm/memory.h>
@@ -152,6 +156,19 @@
 #define C2S_TICK_ROWS		32U
 #define C2S_TICK_BYTES		(C2S_TICK_ROWS * C2S_FB_STRIDE)	/* 0x2d000 */
 #define C2S_FB_SIZE		0x10f6800U
+
+/* Panel text console geometry (diag12, issue #5) */
+#define C2S_PANEL_WIDTH		1440U
+#define C2S_PANEL_HEIGHT	3088U
+#define C2S_CHAR_WIDTH		16U	/* font_vga_8x16 8px scaled 2x */
+#define C2S_CHAR_HEIGHT		32U	/* font_vga_8x16 16px scaled 2x */
+#define C2S_COLS		(C2S_PANEL_WIDTH / C2S_CHAR_WIDTH)	/* 90 columns */
+#define C2S_ROWS		(C2S_PANEL_HEIGHT / C2S_CHAR_HEIGHT)	/* 96 rows */
+#define C2S_ROW_BYTES		(C2S_CHAR_HEIGHT * C2S_FB_STRIDE)	/* 184320 bytes */
+#define C2S_TOTAL_TEXT_BYTES	(C2S_ROWS * C2S_ROW_BYTES)		/* 17694720 bytes */
+#define C2S_SCROLL_BYTES	((C2S_ROWS - 1) * C2S_ROW_BYTES)	/* 17510400 bytes */
+#define C2S_COLOR_BLACK		0xff000000U
+#define C2S_COLOR_WHITE		0xffffffffU
 
 /*
  * One early_memremap()/early_ioremap() call maps at most NR_FIX_BTMAPS
@@ -573,6 +590,209 @@ static void c2s_kick_work_fn(struct work_struct *work)
 
 static struct work_struct c2s_kick_work;
 
+/*
+ * Panel text console (diag12, issue #5).
+ *
+ * Self-contained direct-rendered panel console displaying kernel printk log
+ * independent of simplefb and fbcon.  Renders in-kernel 8x16 font scaled 2x
+ * to 16x32 pixel cells (90 cols x 96 rows) on a8r8g8b8 panel buffers (stride 5760).
+ */
+static DEFINE_RAW_SPINLOCK(c2s_console_lock);
+static unsigned int c2s_cursor_col;
+static unsigned int c2s_cursor_row;
+static bool c2s_console_registered;
+
+static void c2s_console_clear(void)
+{
+	unsigned int fb;
+
+	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++) {
+		void *base;
+
+		if (c2s_fb_map[fb])
+			base = (void __force *)c2s_fb_map[fb];
+		else if (c2s_fb_linear[fb])
+			base = c2s_fb_linear[fb];
+		else
+			continue;
+
+		c2s_fill_band(base, C2S_FB_SIZE, C2S_COLOR_BLACK);
+		if (c2s_fb_cacheable[fb])
+			dcache_clean_inval_poc((unsigned long)base,
+					       (unsigned long)base + C2S_FB_SIZE);
+	}
+	mb();
+	if (c2s_decon_map)
+		c2s_decon_kick(c2s_decon_map);
+}
+
+static void c2s_console_scroll(void)
+{
+	unsigned int fb;
+
+	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++) {
+		void *base;
+
+		if (c2s_fb_map[fb])
+			base = (void __force *)c2s_fb_map[fb];
+		else if (c2s_fb_linear[fb])
+			base = c2s_fb_linear[fb];
+		else
+			continue;
+
+		memmove(base, (u8 *)base + C2S_ROW_BYTES, C2S_SCROLL_BYTES);
+		c2s_fill_band((u8 *)base + C2S_SCROLL_BYTES, C2S_ROW_BYTES, C2S_COLOR_BLACK);
+	}
+}
+
+static void c2s_draw_char(unsigned int col, unsigned int row, unsigned char c)
+{
+	const u8 *glyph = (const u8 *)font_vga_8x16.data + (unsigned int)c * 16;
+	unsigned int gy, gx, fb;
+
+	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++) {
+		u32 *base;
+
+		if (c2s_fb_map[fb])
+			base = (u32 __force *)c2s_fb_map[fb];
+		else if (c2s_fb_linear[fb])
+			base = (u32 *)c2s_fb_linear[fb];
+		else
+			continue;
+
+		for (gy = 0; gy < 16; gy++) {
+			u8 bits = glyph[gy];
+			unsigned int line_off = (row * 32 + gy * 2) * (C2S_FB_STRIDE / sizeof(u32)) + col * 16;
+			u32 *p0 = base + line_off;
+			u32 *p1 = p0 + (C2S_FB_STRIDE / sizeof(u32));
+
+			for (gx = 0; gx < 8; gx++) {
+				u32 color = (bits & (0x80 >> gx)) ? C2S_COLOR_WHITE : C2S_COLOR_BLACK;
+
+				p0[gx * 2] = color;
+				p0[gx * 2 + 1] = color;
+				p1[gx * 2] = color;
+				p1[gx * 2 + 1] = color;
+			}
+		}
+	}
+}
+
+static void c2s_console_write(struct console *con, const char *s, unsigned int count)
+{
+	unsigned long flags;
+	unsigned int min_row = C2S_ROWS, max_row = 0;
+	bool scrolled = false;
+	bool touched = false;
+	unsigned int i, fb;
+	bool locked;
+
+	if (!count)
+		return;
+
+	if (unlikely(oops_in_progress))
+		locked = raw_spin_trylock_irqsave(&c2s_console_lock, flags);
+	else {
+		raw_spin_lock_irqsave(&c2s_console_lock, flags);
+		locked = true;
+	}
+
+	for (i = 0; i < count; i++) {
+		unsigned char ch = (unsigned char)s[i];
+
+		if (ch == '\n') {
+			c2s_cursor_col = 0;
+			c2s_cursor_row++;
+			if (c2s_cursor_row >= C2S_ROWS) {
+				c2s_console_scroll();
+				c2s_cursor_row = C2S_ROWS - 1;
+				scrolled = true;
+			}
+			continue;
+		}
+
+		if (ch == '\r') {
+			c2s_cursor_col = 0;
+			continue;
+		}
+
+		if (ch == '\t') {
+			c2s_cursor_col = (c2s_cursor_col + 8) & ~7;
+			if (c2s_cursor_col >= C2S_COLS) {
+				c2s_cursor_col = 0;
+				c2s_cursor_row++;
+				if (c2s_cursor_row >= C2S_ROWS) {
+					c2s_console_scroll();
+					c2s_cursor_row = C2S_ROWS - 1;
+					scrolled = true;
+				}
+			}
+			continue;
+		}
+
+		if (ch < ' ')
+			continue;
+
+		c2s_draw_char(c2s_cursor_col, c2s_cursor_row, ch);
+		touched = true;
+		if (c2s_cursor_row < min_row)
+			min_row = c2s_cursor_row;
+		if (c2s_cursor_row > max_row)
+			max_row = c2s_cursor_row;
+
+		c2s_cursor_col++;
+		if (c2s_cursor_col >= C2S_COLS) {
+			c2s_cursor_col = 0;
+			c2s_cursor_row++;
+			if (c2s_cursor_row >= C2S_ROWS) {
+				c2s_console_scroll();
+				c2s_cursor_row = C2S_ROWS - 1;
+				scrolled = true;
+			}
+		}
+	}
+
+	if (scrolled || touched) {
+		for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++) {
+			void *base;
+
+			if (!c2s_fb_cacheable[fb])
+				continue;
+
+			if (c2s_fb_map[fb])
+				base = (void __force *)c2s_fb_map[fb];
+			else if (c2s_fb_linear[fb])
+				base = c2s_fb_linear[fb];
+			else
+				continue;
+
+			if (scrolled) {
+				dcache_clean_inval_poc((unsigned long)base,
+						       (unsigned long)base + C2S_TOTAL_TEXT_BYTES);
+			} else {
+				unsigned long start = (unsigned long)base + min_row * C2S_ROW_BYTES;
+				unsigned long end = (unsigned long)base + (max_row + 1) * C2S_ROW_BYTES;
+
+				dcache_clean_inval_poc(start, end);
+			}
+		}
+
+		mb();
+		if (c2s_decon_map)
+			c2s_decon_kick(c2s_decon_map);
+	}
+
+	if (locked)
+		raw_spin_unlock_irqrestore(&c2s_console_lock, flags);
+}
+
+static struct console c2s_diag_console = {
+	.name	= "c2s_diag",
+	.write	= c2s_console_write,
+	.flags	= CON_PRINTBUFFER | CON_ENABLED | CON_ANYTIME,
+	.index	= -1,
+};
+
 void __init c2s_late_init(void)
 {
 	unsigned int fb;
@@ -629,16 +849,24 @@ void __init c2s_late_init(void)
 	 * holds here as everywhere else.
 	 */
 	c2s_band(C2S_LATE_ROW, C2S_LATE_COLOUR);
+
+	c2s_console_clear();
+	c2s_console_registered = true;
+	register_console(&c2s_diag_console);
 }
 
 /*
  * Late path - plain .text, no allocation, no sleeping: legal in atomic
  * context and from any caller once c2s_late_init() has run.
+ * Neutralized once c2s_diag_console registers so text is not overpainted.
  */
 void c2s_band(u32 row, u32 colour)
 {
 	unsigned long band_off = (unsigned long)row * C2S_FB_STRIDE;
 	unsigned int fb;
+
+	if (c2s_console_registered)
+		return;
 
 	if (band_off + C2S_BAND_BYTES > C2S_FB_SIZE)
 		return;
@@ -703,11 +931,15 @@ void c2s_band(u32 row, u32 colour)
  * 32-row milestone tick (diag11).  Shares the exact same long-lived mappings,
  * cache clean, memory barrier and deferred DECON kick as c2s_band(), but paints
  * a 32-row stripe (C2S_TICK_BYTES) instead of the 128-row band.
+ * Neutralized once c2s_diag_console registers so text is not overpainted.
  */
 void c2s_band_32(u32 row, u32 colour)
 {
 	unsigned long band_off = (unsigned long)row * C2S_FB_STRIDE;
 	unsigned int fb;
+
+	if (c2s_console_registered)
+		return;
 
 	if (band_off + C2S_TICK_BYTES > C2S_FB_SIZE)
 		return;

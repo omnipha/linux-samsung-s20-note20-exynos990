@@ -55,10 +55,15 @@ KMSG="${KMSG:-/dev/kmsg}"
 
 log() {
     if [ -w "${KMSG}" ]; then
-        echo "c2s-rescue: $*" > "${KMSG}" 2> /dev/null && return 0
+        echo "c2s-rescue: $*" > "${KMSG}" 2> /dev/null
+    fi
+    if [ -w /dev/console ]; then
+        echo "c2s-rescue: $*" > /dev/console 2> /dev/null
     fi
     echo "c2s-rescue: $*"
 }
+
+log "init start"
 
 # ---------------------------------------------------------------- mounts
 mount -t proc     proc     /proc
@@ -68,6 +73,7 @@ mkdir -p /dev/pts /run
 mount -t devpts   devpts   /dev/pts
 mount -t tmpfs    tmpfs    /run
 mount -t configfs configfs /sys/kernel/config
+log "configfs mounted"
 
 # --------------------------------------------------------------- gadget
 # The USB gadget state machine lives in /usr/lib/c2s-gadget.sh so the
@@ -89,6 +95,7 @@ TELNETD_PID=""
 CONSOLE_PID=""
 
 start_dropbear() {
+    log "dropbear start"
     # -R: generate host keys on first start (none are shipped in the image)
     # -p: bound to the USB addresses only, never 0.0.0.0
     # -F: stay in the foreground so PID 1 can supervise the process
