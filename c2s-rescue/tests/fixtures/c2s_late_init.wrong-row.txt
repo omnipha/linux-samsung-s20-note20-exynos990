@@ -1,0 +1,106 @@
+
+vmlinux:     Dateiformat elf64-littleaarch64
+
+
+ffff8000806e9414 <c2s_late_init>:
+ffff8000806e9414:	d503233f 	paciasp
+ffff8000806e9418:	a9bc7bfd 	stp	x29, x30, [sp, #-64]!
+ffff8000806e941c:	910003fd 	mov	x29, sp
+ffff8000806e9420:	a90153f3 	stp	x19, x20, [sp, #16]
+ffff8000806e9424:	a9025bf5 	stp	x21, x22, [sp, #32]
+ffff8000806e9428:	90002ad5 	adrp	x21, ffff800080c41000 <sleep_save_stash>
+ffff8000806e942c:	910042b3 	add	x19, x21, #0x10
+ffff8000806e9430:	a90363f7 	stp	x23, x24, [sp, #48]
+ffff8000806e9434:	f9400a60 	ldr	x0, [x19, #16]
+ffff8000806e9438:	b5000aa0 	cbnz	x0, ffff8000806e958c <c2s_late_init+0x178>
+ffff8000806e943c:	f9401e60 	ldr	x0, [x19, #56]
+ffff8000806e9440:	b5000a60 	cbnz	x0, ffff8000806e958c <c2s_late_init+0x178>
+ffff8000806e9444:	f0fff4f6 	adrp	x22, ffff800080588000 <ftr_id_aa64mmfr0+0xf0>
+ffff8000806e9448:	d2808117 	mov	x23, #0x408                 	// #1032
+ffff8000806e944c:	913f22d6 	add	x22, x22, #0xfc8
+ffff8000806e9450:	d2800014 	mov	x20, #0x0                   	// #0
+ffff8000806e9454:	d00024f8 	adrp	x24, ffff800080b87000 <folio_wait_table+0x1500>
+ffff8000806e9458:	f2e00d17 	movk	x23, #0x68, lsl #48
+ffff8000806e945c:	f1000a9f 	cmp	x20, #0x2
+ffff8000806e9460:	540000a1 	b.ne	ffff8000806e9474 <c2s_late_init+0x60>  // b.any
+ffff8000806e9464:	91000694 	add	x20, x20, #0x1
+ffff8000806e9468:	f1000e9f 	cmp	x20, #0x3
+ffff8000806e946c:	54ffff81 	b.ne	ffff8000806e945c <c2s_late_init+0x48>  // b.any
+ffff8000806e9470:	14000016 	b	ffff8000806e94c8 <c2s_late_init+0xb4>
+ffff8000806e9474:	39694300 	ldrb	w0, [x24, #2640]
+ffff8000806e9478:	d2800062 	mov	x2, #0x3                   	// #3
+ffff8000806e947c:	d28d0001 	mov	x1, #0x6800                	// #26624
+ffff8000806e9480:	f2a021e1 	movk	x1, #0x10f, lsl #16
+ffff8000806e9484:	f240001f 	tst	x0, #0x1
+ffff8000806e9488:	d2810060 	mov	x0, #0x803                 	// #2051
+ffff8000806e948c:	9a800042 	csel	x2, x2, x0, eq	// eq = none
+ffff8000806e9490:	d5382040 	mrs	x0, tcr_el1
+ffff8000806e9494:	f245001f 	tst	x0, #0x800000000000000
+ffff8000806e9498:	d2806000 	mov	x0, #0x300                 	// #768
+ffff8000806e949c:	9a9f0000 	csel	x0, x0, xzr, eq	// eq = none
+ffff8000806e94a0:	aa000042 	orr	x2, x2, x0
+ffff8000806e94a4:	f8747ac0 	ldr	x0, [x22, x20, lsl #3]
+ffff8000806e94a8:	aa170042 	orr	x2, x2, x23
+ffff8000806e94ac:	97e53ab5 	bl	ffff800080037f80 <__ioremap_prot>
+ffff8000806e94b0:	91004261 	add	x1, x19, #0x10
+ffff8000806e94b4:	f8347820 	str	x0, [x1, x20, lsl #3]
+ffff8000806e94b8:	b4fffd60 	cbz	x0, ffff8000806e9464 <c2s_late_init+0x50>
+ffff8000806e94bc:	91010260 	add	x0, x19, #0x40
+ffff8000806e94c0:	38206a9f 	strb	wzr, [x20, x0]
+ffff8000806e94c4:	17ffffe8 	b	ffff8000806e9464 <c2s_late_init+0x50>
+ffff8000806e94c8:	39402660 	ldrb	w0, [x19, #9]
+ffff8000806e94cc:	36000120 	tbz	w0, #0, ffff8000806e94f0 <c2s_late_init+0xdc>
+ffff8000806e94d0:	d0fffe60 	adrp	x0, ffff8000806b7000 <cpucap_ptrs+0x8>
+ffff8000806e94d4:	f9421001 	ldr	x1, [x0, #1056]
+ffff8000806e94d8:	d2bf5800 	mov	x0, #0xfac00000            	// #4206886912
+ffff8000806e94dc:	cb010000 	sub	x0, x0, x1
+ffff8000806e94e0:	b24c2c00 	orr	x0, x0, #0xfff0000000000000
+ffff8000806e94e4:	f9001e60 	str	x0, [x19, #56]
+ffff8000806e94e8:	52800020 	mov	w0, #0x1                   	// #1
+ffff8000806e94ec:	39010a60 	strb	w0, [x19, #66]
+ffff8000806e94f0:	d00024e0 	adrp	x0, ffff800080b87000 <folio_wait_table+0x1500>
+ffff8000806e94f4:	d2808202 	mov	x2, #0x410                 	// #1040
+ffff8000806e94f8:	d2820001 	mov	x1, #0x1000                	// #4096
+ffff8000806e94fc:	f2e00d02 	movk	x2, #0x68, lsl #48
+ffff8000806e9500:	39694000 	ldrb	w0, [x0, #2640]
+ffff8000806e9504:	f240001f 	tst	x0, #0x1
+ffff8000806e9508:	d2810060 	mov	x0, #0x803                 	// #2051
+ffff8000806e950c:	9a800294 	csel	x20, x20, x0, eq	// eq = none
+ffff8000806e9510:	d5382040 	mrs	x0, tcr_el1
+ffff8000806e9514:	f245001f 	tst	x0, #0x800000000000000
+ffff8000806e9518:	d2806000 	mov	x0, #0x300                 	// #768
+ffff8000806e951c:	9a9f0000 	csel	x0, x0, xzr, eq	// eq = none
+ffff8000806e9520:	aa000294 	orr	x20, x20, x0
+ffff8000806e9524:	d2a320a0 	mov	x0, #0x19050000            	// #419758080
+ffff8000806e9528:	aa020282 	orr	x2, x20, x2
+ffff8000806e952c:	97e53a95 	bl	ffff800080037f80 <__ioremap_prot>
+ffff8000806e9530:	b26b7be1 	mov	x1, #0xfffffffe00000       	// #4503599625273344
+ffff8000806e9534:	f9000aa0 	str	x0, [x21, #16]
+ffff8000806e9538:	f9002661 	str	x1, [x19, #72]
+ffff8000806e953c:	91014261 	add	x1, x19, #0x50
+ffff8000806e9540:	f9002a61 	str	x1, [x19, #80]
+ffff8000806e9544:	aa0003e4 	mov	x4, x0
+ffff8000806e9548:	f9002e61 	str	x1, [x19, #88]
+ffff8000806e954c:	f0ffca41 	adrp	x1, ffff800080034000 <aarch64_insn_patch_text+0x70>
+ffff8000806e9550:	911eb021 	add	x1, x1, #0x7ac
+ffff8000806e9554:	f9003261 	str	x1, [x19, #96]
+ffff8000806e9558:	a9410a61 	ldp	x1, x2, [x19, #16]
+ffff8000806e955c:	f9401e63 	ldr	x3, [x19, #56]
+ffff8000806e9560:	b4000081 	cbz	x1, ffff8000806e9570 <c2s_late_init+0x15c>
+ffff8000806e9564:	b4000062 	cbz	x2, ffff8000806e9570 <c2s_late_init+0x15c>
+ffff8000806e9568:	b4000043 	cbz	x3, ffff8000806e9570 <c2s_late_init+0x15c>
+ffff8000806e956c:	b5000080 	cbnz	x0, ffff8000806e957c <c2s_late_init+0x168>
+ffff8000806e9570:	b0fffb80 	adrp	x0, ffff80008065a000 <kallsyms_seqs_of_names+0x14774>
+ffff8000806e9574:	913de000 	add	x0, x0, #0xf78
+ffff8000806e9578:	97e4b4af 	bl	ffff800080016834 <_printk>
+ffff8000806e957c:	52801001 	mov	w1, #0x80                  	// #128
+ffff8000806e9580:	52816800 	mov	w0, #0xb41                 	// #2880
+ffff8000806e9584:	72bfe001 	movk	w1, #0xff00, lsl #16
+ffff8000806e9588:	97e52c96 	bl	ffff8000800347e0 <c2s_band>
+ffff8000806e958c:	a94153f3 	ldp	x19, x20, [sp, #16]
+ffff8000806e9590:	a9425bf5 	ldp	x21, x22, [sp, #32]
+ffff8000806e9594:	a94363f7 	ldp	x23, x24, [sp, #48]
+ffff8000806e9598:	a8c47bfd 	ldp	x29, x30, [sp], #64
+ffff8000806e959c:	d50323bf 	autiasp
+ffff8000806e95a0:	d65f03c0 	ret
+

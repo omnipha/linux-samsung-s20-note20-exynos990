@@ -1251,3 +1251,95 @@ artefact hashes and the two `verify.sh` runs.
   diag10.
 * fbcon may overwrite bands at rows >= 640; no console text has appeared on
   the panel so far.
+
+## Candidate 9 (turn 2026-11-24): C2..C3 bisect tick + pre-workqueue kick fix
+
+diag10, step 1. `setup_arch()` returns at C2 (768) and `console_init()`
+returns at C3 (896) - a window of ~140 lines in `init/main.c` covering
+`mm_core_init()`, `init_IRQ()`, `timekeeping_init()` and `console_init()`
+itself. The diag9 photo (owner, 2026-11-24 13:13–13:16) shows C2 (cyan)
+and does **not** show C3 (orange), while both sit in rows the same photo
+shows plainly. As the hardware record for that run puts it: the missing C3
+by itself implies neither a crash inside the C2..C3 window nor any
+particular USB failure point - paint, cache and refresh failures and a
+later scanout change stay open. The window therefore cannot be read out at
+all from C2 and C3 alone, and the previous run (diag8, both C2 and C3
+absent) does not narrow it either.
+
+`c2s_late_init()` is called from `init/main.c` inside that window (right
+after `mm_core_init()`) and is defined in the painter, so the bisect tick
+is one line and no second source file.
+
+### The defect this candidate exists to prevent
+
+`c2s_late_init()` runs with **IRQs already disabled** (the
+`local_irq_disable()` before `setup_arch()` is not re-enabled until after
+`workqueue_init_early()`), and `system_percpu_wq` is **still NULL** there:
+`workqueue_init_early()` runs dozens of lines *after* `c2s_late_init()`.
+
+`c2s_band()` deferred its DECON refresh with
+`if (irqs_disabled()) schedule_work(...)`. From the USB call sites that
+was correct (workqueues exist by then, and the dwc3 spinlock is held). From
+`c2s_late_init()` it would have queued onto a NULL workqueue and
+`__queue_work()` would have dereferenced it - the diagnostic killing the
+boot one line after `mm_core_init()`, i.e. inside the very window it is
+supposed to read out. With IRQs off there is no safe fallback: the refresh
+now runs **synchronously** when `system_percpu_wq` is NULL (bounded MMIO,
+the same sequence `c2s_kick_early()` issues in the ID-map phase) and the
+atomic deferral is kept once the workqueues exist.
+
+### The new tick
+
+| milestone | rows | colour (AARRGGBB) | where | phase / mapping |
+|---|---|---|---|---|
+| **L1 `c2s_late_init()`** | **2880..3007** | **`0xff000080`** | **end of `c2s_late_init()`, after `mm_core_init()`** | **late path: fb0/fb1 via `ioremap_wc()`, fb2 via `phys_to_virt()`** |
+
+2880 is the first free 128-row slot after S3 (S3 ends at 2879) and outside
+the logo zone; `0xff000080` (dark navy) appears nowhere else in the ladder.
+Rows 2880..3087 are visible in the diag9 photo, so the readout contract
+applies unchanged.
+
+### Readout contract (candidate 9)
+
+* **Visible**: the code reached `c2s_late_init()` and the late paint path
+  plus one DECON refresh worked. What C3 did not show is then confined to
+  `console_init()` and its surroundings - but only as far as C3's own
+  visibility goes, which is itself unexplained.
+* **Missing**: *still* proves nothing on its own. The fill, the cache
+  clean, the mappings taken above, or the scanout may have failed while
+  execution carried on. The header rule - "a missing band is never proof
+  that execution stopped" - is not relaxed by this candidate; the comment
+  that shipped with the tick in build 10 was corrected to say exactly this
+  (it had claimed the missing C3 located the stall).
+
+### Gate changes
+
+* `check-c-milestone-bands.py` gains the `c2s_late_init` entry
+  (`("c2s_band", (2880, 0xff000080))`); it was absent before, so the new
+  call site was unchecked. **PASS (15 milestone call site(s) verified)**.
+* `check-c2s-paint-paths.py` gains three properties (25, was 21): the
+  deferred kick must be guarded on `system_percpu_wq`, the guard must read
+  `irqs_disabled() && system_percpu_wq`, and `c2s_late_init()` must paint
+  its tick via `c2s_band()` - not the `__init` `c2s_band_early()`, which
+  would reach `early_memremap()` in `.init.text` after that memory is
+  released. **PASS (25 paint-path properties verified)**.
+* New negative control `c2s-rescue/tests/fixtures/c2s_late_init.wrong-row.txt`
+  (2880 -> 2881), wired into `verify.sh`; plus temp-copy controls with the
+  kick guard reverted and with the tick call removed - all rejected (rc=1).
+
+### Host-verified evidence (candidate 9)
+
+See "Host evidence" and "Artifacts" in build 10 of `build-record.md`: both
+builds **230 passed, 0 failed**, artefact hashes and the disassembly proof
+(`mov w0, #0xb40` / `movk w1, #0xff00, lsl #16` / `bl c2s_band`).
+
+### Still open (candidate 9)
+
+* No hardware run. `HOST_CANDIDATE_READY` is a build/gate claim only; #5
+  and #4 stay open until a panel photo or a USB/console observation backs
+  them.
+* The window is bisected at one point only. Finer ticks inside C2..C3, the
+  initcall/USB phase readout, the on-panel text readout and the USB
+  milestone call sites are not in this candidate.
+* The USB failure root cause is unchanged: `maximum-speed = "high-speed"`
+  is still a one-variable candidate.

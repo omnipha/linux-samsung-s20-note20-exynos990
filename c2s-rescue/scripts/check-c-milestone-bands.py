@@ -72,6 +72,16 @@ EXPECTED = {
         ("c2s_band_early", (2624, 0xFF800080)),
         ("c2s_band_early", (2752, 0xFFC0C0C0)),
     ],
+    # diag10: the C2..C3 bisect tick.  c2s_late_init() runs inside that
+    # window (init/main.c, right after mm_core_init()), so a band there
+    # separates "the window was walked through" from "the window was
+    # never entered" - subject to the standing rule that a missing band
+    # may also be a paint/scanout failure.  Row 2880 is the first free
+    # 128-row slot after S3 (S3 ends at 2879) and outside the logo zone;
+    # 0xff000080 (dark navy) appears nowhere else in the ladder.
+    "c2s_late_init": [
+        ("c2s_band", (2880, 0xFF000080)),
+    ],
     # diag9 removed every USB milestone call site: rows 1280/1408/1536 sit
     # in the logo band, and 1024/1152 became the discriminator and are
     # simply dropped until diag10 re-places them.

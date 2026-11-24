@@ -531,7 +531,8 @@ if [ -f "${C_MILESTONE_CHECKER}" ] && [ -x "${VBUILD}" -o -s "${VBUILD}" ]; then
 	# it too.  The third field is the function the listing belongs to.
 	for pair in "start_kernel.scanout-wrong-row.txt:the wrong discriminator row (1025):start_kernel" \
 		"start_kernel.scanout-wrong-colour.txt:the wrong fb2 colour (blue->0xff0000fe):start_kernel" \
-		"setup_arch.s3-wrong-row.txt:the wrong S3 row (2752 -> 2753):setup_arch"; do
+		"setup_arch.s3-wrong-row.txt:the wrong S3 row (2752 -> 2753):setup_arch" \
+		"c2s_late_init.wrong-row.txt:the wrong C2..C3 bisect row (2880 -> 2881):c2s_late_init"; do
 		fixture_name="${pair%%:*}"
 		rest="${pair#*:}"
 		fixture_why="${rest%%:*}"

@@ -297,6 +297,51 @@ def check_bands(text):
              "through the cacheable linear alias could stay in the CPU "
              "cache and never reach DRAM")
 
+        # --- 6. the deferred kick must not run before the workqueues ----
+        # c2s_band() defers the DECON refresh to a work item when IRQs are
+        # disabled, because gether_connect() holds dwc3's spinlock there.
+        # schedule_work() queues on system_percpu_wq, and that workqueue is
+        # only created by workqueue_init_early() - which runs *after*
+        # c2s_late_init() (init/main.c).  Queueing before that would
+        # dereference a NULL wq inside __queue_work() and kill the boot the
+        # diagnostic is meant to observe.  The band inside c2s_late_init()
+        # is therefore the first caller of that path.
+        need("system_percpu_wq" in band,
+             "c2s_band: the deferred kick is guarded on system_percpu_wq "
+             "being non-NULL",
+             "c2s_band: the deferred kick is not guarded on "
+             "system_percpu_wq - c2s_band() is called from c2s_late_init(), "
+             "i.e. before workqueue_init_early() created the workqueues, so "
+             "schedule_work() would dereference a NULL system_percpu_wq")
+
+        need(re.search(r"irqs_disabled\(\)\s*&&\s*system_percpu_wq", band)
+             is not None,
+             "c2s_band: the workqueue path needs both IRQs off and the "
+             "workqueue to exist",
+             "c2s_band: the workqueue path is not conditioned on "
+             "`irqs_disabled() && system_percpu_wq` - it would either "
+             "defer a refresh while the workqueues do not exist yet, or "
+             "run a bounded DECON poll under dwc3's spinlock")
+
+    # --- 7. the C2..C3 bisect band is painted from c2s_late_init() -----
+    # The band has to be painted through the long-lived mappings (the
+    # late path), not through the early_memremap() path: c2s_late_init()
+    # runs after paging_init(), so both are legal there, but the late path
+    # is the one that is independent of the early fixmap helper.
+    late = function_body(text, "c2s_late_init")
+    if late is not None:
+        need(re.search(r"c2s_band\(\s*C2S_LATE_ROW\s*,\s*C2S_LATE_COLOUR\s*\)",
+                       late) is not None,
+             "c2s_late_init: paints the C2..C3 bisect band",
+             "c2s_late_init: the C2..C3 bisect band is not painted here - "
+             "the window between C2 and C3 would stay unbisected")
+        need("c2s_band_early(" not in late,
+             "c2s_late_init: the bisect band uses the late path, not the "
+             "__init early_memremap() path",
+             "c2s_late_init: uses c2s_band_early() - that path reaches "
+             "early_memremap(), which lives in .init.text and is freed "
+             "with the initmem the late path runs after")
+
     return failures, ok
 
 

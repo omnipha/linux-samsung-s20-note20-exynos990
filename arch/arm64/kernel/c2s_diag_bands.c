@@ -521,6 +521,33 @@ void __init c2s_scanout_probe(u32 row, u32 c_fb0, u32 c_fb1, u32 c_fb2)
  * present and the per-entry c2s_fb_cacheable[] flag selects the cache
  * maintenance, so a failure to map one buffer cannot hide the others.
  */
+/*
+ * Issue #5 diag10 - bisect tick for the C2..C3 window.
+ *
+ * The diag9 photo shows C2 (cyan, right after setup_arch()) and does not
+ * show C3 (orange, right after console_init()).  That alone says nothing
+ * about where execution went: C3 may have been painted and overwritten, or
+ * written into a buffer the scanout never showed, and the same photo also
+ * cannot distinguish any of that from a real stall - the header comment's
+ * rule, unchanged here.  What the photo does give is a window of ~140 lines
+ * (mm_core_init, setup_log_buf, vfs_caches_init_early, trap_init, the IRQ
+ * and timer inits, console_init itself) that a single gap cannot split, so
+ * C2..C3 is unreadable either way until something inside it reports.
+ *
+ * c2s_late_init() is called from inside that window (init/main.c, straight
+ * after mm_core_init()) and lives in this file, so it is the one bisect
+ * point that needs no second source file.  A *visible* band here proves the
+ * allocator and vmap came up and that this paint path and one DECON refresh
+ * worked, which confines whatever C3 did not show to console_init() and its
+ * surroundings; a *missing* band still proves nothing on its own.  Row
+ * 2880..3007 is the only free 128-row slot outside the logo zone (S3 ends
+ * at 2879, layout rule allows 2271..), and the colour 0xff000080 appears
+ * nowhere else in the ladder, so the band cannot be confused with any other
+ * milestone.
+ */
+#define C2S_LATE_ROW		2880U
+#define C2S_LATE_COLOUR		0xff000080U
+
 static void __iomem *c2s_fb_map[ARRAY_SIZE(c2s_fb_phys)];
 static void *c2s_fb_linear[ARRAY_SIZE(c2s_fb_phys)];
 static bool c2s_fb_cacheable[ARRAY_SIZE(c2s_fb_phys)];
@@ -589,6 +616,17 @@ void __init c2s_late_init(void)
 		pr_err("c2s: milestone mappings incomplete: fb0=%p fb1=%p fb2=%p decon=%p\n",
 		       c2s_fb_map[0], c2s_fb_map[1], c2s_fb_linear[C2S_FB_LINEAR],
 		       c2s_decon_map);
+
+	/*
+	 * The C2..C3 bisect band.  Reached only on the first pass (the early
+	 * return above), so it paints exactly once, through the mappings just
+	 * taken rather than through early_memremap() - which is the point: it
+	 * is an independent proof that the *late* path works, and it carries
+	 * execution past mm_core_init() on the photo.  Whether it shows up
+	 * says nothing about a stall on its own; the header comment's rule
+	 * holds here as everywhere else.
+	 */
+	c2s_band(C2S_LATE_ROW, C2S_LATE_COLOUR);
 }
 
 /*
@@ -638,7 +676,22 @@ void c2s_band(u32 row, u32 colour)
 	if (!c2s_decon_map)
 		return;
 
-	if (irqs_disabled())
+	/*
+	 * The refresh is deferred to a work item only where deferral exists
+	 * for a reason *and* the workqueues exist: gether_connect() runs with
+	 * interrupts and softirqs disabled under dwc3's spinlock, where the
+	 * bounded DECON poll would stall the USB control path.  That needs
+	 * system_percpu_wq, and workqueue_init_early() has not run yet when
+	 * c2s_late_init() is called (init/main.c: IRQs are still disabled
+	 * from the local_irq_disable() before setup_arch(), and the
+	 * workqueue workqueues are created dozens of lines later).  Queueing
+	 * there would reach __queue_work() with a NULL wq and dereference
+	 * it - a NULL pointer read the diagnostic would introduce itself.
+	 * Before that point kick directly: the kick is bounded MMIO, allocates
+	 * nothing and is the same sequence c2s_kick_early() issues from the
+	 * ID-map phase with IRQs already off.
+	 */
+	if (irqs_disabled() && system_percpu_wq)
 		schedule_work(&c2s_kick_work);
 	else
 		c2s_decon_kick(c2s_decon_map);

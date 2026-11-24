@@ -1252,3 +1252,130 @@ ok, FDT 142 044 B == kbuild DTB.
 * The USB failure root cause is unchanged: `maximum-speed = "high-speed"`
   is still a one-variable candidate, and the USB milestone bands are gone
   until diag10.
+
+## Build 10 (turn 2026-11-24): C2..C3 bisect tick + the pre-workqueue kick fix
+
+diag10, step 1. The C2..C3 window (`init/main.c`, `setup_arch()` done at
+C2 to `console_init()` returned at C3) is ~140 lines wide and a single gap
+in it says nothing about which half failed. `c2s_late_init()` is called
+from inside that window - right after `mm_core_init()` - and lives in the
+painter, so it is the one bisect point that needs no second source file.
+
+### Build commands (build host)
+
+```
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag10-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag10-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag10-out
+```
+
+The paired baseline (same tree, `CONFIG_C2S_DIAG` off) went to
+`/tmp/opencode/c2s-diag10-base-out` the same way.
+
+`build.sh` exit 0; `package-bootimg.sh` exit 0; `verify.sh` exit 0 for both
+(**230 passed, 0 failed** each; build 9 had 229 - the extra check is the
+new negative control below).
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag10, signed) | `/tmp/opencode/c2s-diag10-out/boot.img` | 61 865 984 | `d106f34d5381b2337aba5cc9a7785498ccbb1138229694c238f8f881b9a6e504` |
+| Image (diag10) | `/tmp/opencode/c2s-diag10-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `e10d83c1d8e36bcc1938020baaf4de9acb3a0dc71a9bcbc5db1b38a5de2a6a07` |
+| DTB | `/tmp/opencode/c2s-diag10-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 142 044 | `68e5f8ca89d33230eff26cce7b97e6496574c5894c74dd07249d54f2e5be242b` |
+| initramfs | `/tmp/opencode/c2s-diag10-out/work/initramfs.cpio.gz` | 3 367 458 | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag10-base-out/boot.img` | 61 865 984 | `8620f202dd87f703332468d533fee2387ee1ff8ca9b81a4299b3fc46cf7cfee0` |
+| Image (baseline) | `/tmp/opencode/c2s-diag10-base-out/kbuild/arch/arm64/boot/Image` | 12 677 632 | `226efb60a6e377930427464b1a2b2a16e20e9bc9f35e06672c22551e0e32673a` |
+
+The DTB and the initramfs are byte-identical to build 9 (neither the
+device tree nor the rootfs changed); the baseline `Image` is too - the only
+delta is the diag `Image`, i.e. this build really adds code to
+`CONFIG_C2S_DIAG=y` only. AVB: `SHA256_RSA4096`, rollback index **13**,
+Samsung DT table `d7b7ab1e` ok, FDT 142 044 B == kbuild DTB.
+
+### What changed
+
+* `arch/arm64/kernel/c2s_diag_bands.c`
+  * **The defect this build exists to prevent.** `c2s_band()` deferred the
+    DECON refresh with `if (irqs_disabled()) schedule_work(...)` - legal
+    from the USB call sites (the workqueues exist by the time any
+    initcall/driver probe runs), but `c2s_late_init()` is called from
+    `init/main.c` with IRQs already disabled from the `local_irq_disable()`
+    *before* `setup_arch()`, and `workqueue_init_early()` - which creates
+    `system_percpu_wq` - runs dozens of lines *after* it. The first call
+    would have reached `__queue_work()` with a `wq == NULL` and
+    dereferenced it, i.e. the diagnostic would have killed the boot it is
+    supposed to observe, one line after `mm_core_init()`. The condition is
+    now `irqs_disabled() && system_percpu_wq`: before the workqueues exist
+    the refresh runs synchronously (bounded MMIO, no allocation, the same
+    sequence `c2s_kick_early()` issues in the ID-map phase), and the
+    atomic deferral for dwc3's spinlock is kept once they do exist.
+  * the new `C2S_LATE_ROW` (2880, first free 128-row slot after S3's
+    2879 and outside the logo zone) / `C2S_LATE_COLOUR` (0xff000080, dark
+    navy, unique in the ladder) and the `c2s_band(C2S_LATE_ROW,
+    C2S_LATE_COLOUR)` call at the end of `c2s_late_init()`.
+  * the comment that shipped with that tick was corrected: a **visible**
+    band proves the allocator/vmap came up and this paint path plus one
+    DECON refresh worked; a **missing** band still proves nothing, because
+    the fill, the cache clean, the mappings taken above or the scanout can
+    have failed while execution carried on. The header comment's standing
+    rule ("a missing band is never proof that execution stopped") is not
+    relaxed by this candidate.
+* `c2s-rescue/scripts/check-c-milestone-bands.py` - `c2s_late_init` added
+  to the expected table with `("c2s_band", (2880, 0xff000080))`; it was
+  absent before, so the new call site was unchecked.
+* `c2s-rescue/scripts/check-c2s-paint-paths.py` - three new properties
+  (25 now, was 21): the deferred kick must be guarded on
+  `system_percpu_wq`, the guard must read `irqs_disabled() &&
+  system_percpu_wq`, and `c2s_late_init()` must paint its tick via the
+  late path (`c2s_band`, not the `__init` `c2s_band_early()`, which would
+  reach `early_memremap()` in `.init.text` after that memory is released).
+* `c2s-rescue/tests/fixtures/c2s_late_init.wrong-row.txt` (new) -
+  negative control for the new call site (row 2880 -> 2881).
+* `c2s-rescue/scripts/verify.sh` - the new fixture wired into the C
+  milestone negative-control loop.
+
+### Host evidence
+
+* `check-c-milestone-bands.py` on the diag10 vmlinux: **PASS (15 milestone
+  call site(s) verified)** - build 9's fourteen plus the new
+  `c2s_late_init` entry. The disassembly of `c2s_late_init` shows
+  `mov w0, #0xb40` / `mov w1, #0x80` + `movk w1, #0xff00, lsl #16` /
+  `bl c2s_band`, i.e. row 2880 and colour 0xff000080 exactly as pinned.
+* `check-c2s-paint-paths.py`: **PASS (25 paint-path properties verified)**.
+* `verify.sh` on the diag build: **230 passed, 0 failed**; on the paired
+  baseline: **230 passed, 0 failed**.
+* **Negative controls, all rejected** (rc=1 each):
+  `c2s_late_init.wrong-row.txt` (2880 -> 2881);
+  a painter copy with the kick guard reverted to
+  `if (irqs_disabled())` - rejected by the
+  `irqs_disabled() && system_percpu_wq` property; a copy with that guard
+  reverted *and* the `c2s_band(C2S_LATE_ROW, C2S_LATE_COLOUR)` call
+  removed - rejected by both that property and the "the C2..C3 bisect
+  band is not painted here" property; plus all four pre-existing
+  milestone fixtures and both pre-existing paint-path fixtures
+  (`c2s_diag_bands.skip-fb2-and-abort.txt` still rejected with rc=1).
+* The negative controls were run against temporary copies under
+  `/tmp/opencode/`; the working tree was never modified by them.
+
+### What is still NOT proven
+
+* No hardware run: nothing here shows the band appearing on the panel, and
+  `HOST_CANDIDATE_READY` is a build/gate claim only. #5 and #4 stay open
+  until a photo of the panel or a USB/console observation backs them.
+* The value of the new tick is conditional and symmetric: visible tick
+  means the window was walked through to `c2s_late_init()` and the gap to
+  C3 shrinks to `console_init()` and its surroundings; a missing tick
+  still allows "the paint or the scanout failed", exactly as before.
+* The C2..C3 window is bisected at one point only (`mm_core_init()`).
+  Finer ticks inside the window, the initcall/USB phase readout and the
+  on-panel text readout are not in this build.
+* The USB failure root cause is unchanged: `maximum-speed = "high-speed"`
+  is still a one-variable candidate, and the USB milestone call sites are
+  still removed until a later diag10 step re-places them in visible rows.
