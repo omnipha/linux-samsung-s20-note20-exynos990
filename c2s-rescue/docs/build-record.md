@@ -1379,3 +1379,63 @@ Samsung DT table `d7b7ab1e` ok, FDT 142 044 B == kbuild DTB.
 * The USB failure root cause is unchanged: `maximum-speed = "high-speed"`
   is still a one-variable candidate, and the USB milestone call sites are
   still removed until a later diag10 step re-places them in visible rows.
+
+## Build 11 (turn 2026-11-24): diag11 stage bands (K1-K4, U1-U5) & fbcon
+
+Completes diag11 by wiring kernel-side stage bands into `init/main.c` (K1
+after `console_init()`/`locking_selftest()`, K2 at entry to `kernel_init()`,
+K3 after `do_initcalls()`, K4 in `run_init_process()`), complementary to
+userspace U1-U5 stage bands in `/usr/lib/c2s-gadget.sh` and K4 entry band in
+`/init`.
+
+### Build commands (build host)
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag11-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag11-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag11-out
+```
+
+Paired baseline (`CONFIG_C2S_DIAG` off) built into `/tmp/opencode/c2s-diag11-base-out`:
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag11-base-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag11-base-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag11-base-out
+```
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag11, signed) | `/tmp/opencode/c2s-diag11-out/boot.img` | 61 865 984 | `97c57b61864dcff6f39a99aae36f3685fae710579026c39452241eaa1c5ad3ca` |
+| Image (diag11) | `/tmp/opencode/c2s-diag11-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `555382c9732ec0335e33486c4fcafb48bc4d9fae1dad76f63070fdd1d5b9399c` |
+| DTB | `/tmp/opencode/c2s-diag11-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 142 044 | `68e5f8ca89d33230eff26cce7b97e6496574c5894c74dd07249d54f2e5be242b` |
+| initramfs | `/tmp/opencode/c2s-diag11-out/work/initramfs.cpio.gz` | 3 368 927 | `0442b7815dc02f7ca52222b5b9985dd8ec1b31d61f733fe11b20021f66d95df7` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag11-base-out/boot.img` | 61 865 984 | `ee64346be73c3b158422766e21c70a650a8e2f5ddd61901239db4acd45485111` |
+| Image (baseline) | `/tmp/opencode/c2s-diag11-base-out/kbuild/arch/arm64/boot/Image` | 12 677 632 | `70c0c673d1c61ad0383aede97313fc21a6f47c8302b0447142dfe28479a8ef8d` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 142 044 B == kbuild DTB.
+
+### Host evidence
+
+* `check-c-milestone-bands.py` on diag11 vmlinux: **PASS (20 milestone call site(s) verified)**.
+* `check-c-milestone-bands.py --expect-none` on baseline vmlinux: **PASS (no milestone call sites; baseline build)**.
+* `check-c2s-paint-paths.py`: **PASS (25 paint-path properties verified)**.
+* `fault-injection.sh`: **10 passed, 0 failed**.
+* `verify.sh`: **231 passed, 0 failed** on diag11; **231 passed, 0 failed** on baseline.
+* Negative controls: all 6 rejected (`kernel_init.wrong-row.txt`, `c2s_late_init.wrong-row.txt`,
+  `setup_arch.s3-wrong-row.txt`, `start_kernel.scanout-wrong-colour.txt`,
+  `start_kernel.scanout-wrong-row.txt`, `gether_connect.wrong-row.txt`).

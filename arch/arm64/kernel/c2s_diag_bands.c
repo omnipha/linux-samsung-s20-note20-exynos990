@@ -149,6 +149,8 @@
 #define C2S_FB_STRIDE		5760U
 #define C2S_BAND_ROWS		128U
 #define C2S_BAND_BYTES		(C2S_BAND_ROWS * C2S_FB_STRIDE)	/* 0xb4000 */
+#define C2S_TICK_ROWS		32U
+#define C2S_TICK_BYTES		(C2S_TICK_ROWS * C2S_FB_STRIDE)	/* 0x2d000 */
 #define C2S_FB_SIZE		0x10f6800U
 
 /*
@@ -691,6 +693,48 @@ void c2s_band(u32 row, u32 colour)
 	 * nothing and is the same sequence c2s_kick_early() issues from the
 	 * ID-map phase with IRQs already off.
 	 */
+	if (irqs_disabled() && system_percpu_wq)
+		schedule_work(&c2s_kick_work);
+	else
+		c2s_decon_kick(c2s_decon_map);
+}
+
+/*
+ * 32-row milestone tick (diag11).  Shares the exact same long-lived mappings,
+ * cache clean, memory barrier and deferred DECON kick as c2s_band(), but paints
+ * a 32-row stripe (C2S_TICK_BYTES) instead of the 128-row band.
+ */
+void c2s_band_32(u32 row, u32 colour)
+{
+	unsigned long band_off = (unsigned long)row * C2S_FB_STRIDE;
+	unsigned int fb;
+
+	if (band_off + C2S_TICK_BYTES > C2S_FB_SIZE)
+		return;
+
+	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++) {
+		void *p;
+
+		if (c2s_fb_map[fb])
+			p = (void *)((u8 __force *)c2s_fb_map[fb] + band_off);
+		else if (c2s_fb_linear[fb])
+			p = (u8 *)c2s_fb_linear[fb] + band_off;
+		else
+			continue;
+
+		c2s_fill_band(p, C2S_TICK_BYTES, colour);
+
+		if (c2s_fb_cacheable[fb]) {
+			dcache_clean_inval_poc((unsigned long)p,
+					       (unsigned long)p + C2S_TICK_BYTES);
+		}
+	}
+
+	mb();
+
+	if (!c2s_decon_map)
+		return;
+
 	if (irqs_disabled() && system_percpu_wq)
 		schedule_work(&c2s_kick_work);
 	else

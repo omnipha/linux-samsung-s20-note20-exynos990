@@ -49,6 +49,7 @@ void __init c2s_mark_idmap_gone(void);
 void __init c2s_mark_linear_ready(void);
 void __init c2s_late_init(void);
 void c2s_band(u32 row, u32 colour);
+void c2s_band_32(u32 row, u32 colour);
 
 #else /* CONFIG_C2S_DIAG */
 
@@ -59,6 +60,7 @@ static inline void c2s_mark_idmap_gone(void) { }
 static inline void c2s_mark_linear_ready(void) { }
 static inline void c2s_late_init(void) { }
 static inline void c2s_band(u32 row, u32 colour) { }
+static inline void c2s_band_32(u32 row, u32 colour) { }
 
 #endif /* CONFIG_C2S_DIAG */
 

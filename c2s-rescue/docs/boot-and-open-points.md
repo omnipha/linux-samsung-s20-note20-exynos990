@@ -307,13 +307,15 @@ the host-side evidence cannot show:
    verification (170 gates + 5 fault cases) is necessary evidence, not
    sufficient.
 
-## Current candidate (SSH key included, M1b control-flow fix, passwordless sudo)
+## Current candidate (diag11 stage bands K1-K4 & U1-U5, fbcon enabled)
 
 | Artifact | Size | sha256 |
 |---|---|---|
-| `boot.img` | 61,865,984 B | `13cdc38ca0725706d7367ef9fcd023e1ce5bdd034f8436720da67e9688c49243` |
-| `Image` | 12,808,704 B | `909d03e1c971302f9b805384d2ac97f958add003a85d9029417c1b50f952eb9a` |
-| `initramfs.cpio.gz` | 3,367,458 B | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
+| `boot.img` (diag11) | 61,865,984 B | `97c57b61864dcff6f39a99aae36f3685fae710579026c39452241eaa1c5ad3ca` |
+| `Image` (diag11) | 12,808,704 B | `555382c9732ec0335e33486c4fcafb48bc4d9fae1dad76f63070fdd1d5b9399c` |
+| `boot.img` (baseline) | 61,865,984 B | `ee64346be73c3b158422766e21c70a650a8e2f5ddd61901239db4acd45485111` |
+| `Image` (baseline) | 12,677,632 B | `70c0c673d1c61ad0383aede97313fc21a6f47c8302b0447142dfe28479a8ef8d` |
+| `initramfs.cpio.gz` | 3,368,927 B | `0442b7815dc02f7ca52222b5b9985dd8ec1b31d61f733fe11b20021f66d95df7` |
 
 Packaged with the operator's public key (fingerprint
 `SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE`, mode 0600 inside
@@ -321,8 +323,8 @@ the initramfs, proven from the image) for **both** `root` and the
 unprivileged `rescue` login account, plus a `SHA256_RSA4096` /
 rollback 13 AVB footer signed with the authorized host key.
 
-Host verification: **217 passed, 0 failed** (`verify.sh`, serial run),
-plus 10/10 host fault-injection checks for the ACM-independent
+Host verification: **231 passed, 0 failed** (`verify.sh`, on both diag11
+and baseline), plus 10/10 host fault-injection checks for the ACM-independent
 fallback. Nothing here demonstrates a boot, USB enumeration, serial
 console output, SSH login or `sudo -n id` on the device - those need
 the coordinator's hardware run.

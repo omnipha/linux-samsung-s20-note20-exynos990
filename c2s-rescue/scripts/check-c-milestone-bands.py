@@ -60,6 +60,7 @@ EXPECTED = {
         ("c2s_band_early", (768, 0xFF00FFFF)),
         ("c2s_band_early", (896, 0xFFFFA500)),
         ("c2s_late_init", ()),
+        ("c2s_band_32", (1152, 0xFFFFC0C0)),
     ],
     # setup_arch(): S1 before cpu_uninstall_idmap(), then the two mapping
     # markers, then S2 right after paging_init() and S3 at the end.
@@ -82,11 +83,18 @@ EXPECTED = {
     "c2s_late_init": [
         ("c2s_band", (2880, 0xFF000080)),
     ],
-    # diag9 removed every USB milestone call site: rows 1280/1408/1536 sit
-    # in the logo band, and 1024/1152 became the discriminator and are
-    # simply dropped until diag10 re-places them.
+    "rest_init": [
+        ("c2s_band_32", (1184, 0xFF804000)),
+    ],
+    "kernel_init": [
+        ("c2s_band_32", (1184, 0xFFC0FFC0)),
+        ("c2s_band_32", (1216, 0xFFC0C0FF)),
+    ],
+    "run_init_process": [
+        ("c2s_band_32", (2272, 0xFFFFC0FF)),
+        ("c2s_band_32", (2272, 0xFF8B0000)),
+    ],
     "usb_add_gadget": [],
-    "run_init_process": [],
     "gadget_bind_driver": [],
     "gether_connect": [],
 }
@@ -95,7 +103,7 @@ EXPECTED = {
 ALL_FUNCTIONS = list(EXPECTED)
 
 INSN_RE = re.compile(r"^([0-9a-f]{8,}):\s+([0-9a-f]+)\s+(\S+)\s*(.*)$")
-CALL_RE = re.compile(r"^bl\s+[0-9a-f]+ <(c2s_[a-z_]+)>$")
+CALL_RE = re.compile(r"^bl\s+[0-9a-f]+ <(c2s_[a-z0-9_]+)>$")
 # The operand part of the argument-building instructions, e.g.
 #   w0, #0x300                  // #768
 #   w1, #0xd8e6                 // #55526

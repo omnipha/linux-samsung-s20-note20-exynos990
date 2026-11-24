@@ -1343,3 +1343,47 @@ builds **230 passed, 0 failed**, artefact hashes and the disassembly proof
   milestone call sites are not in this candidate.
 * The USB failure root cause is unchanged: `maximum-speed = "high-speed"`
   is still a one-variable candidate.
+
+## Candidate 10 (turn 2026-11-24): diag11 kernel & userspace stage bands + fbcon
+
+diag11 completes the diagnostic stage bands across both kernel-side and
+userspace phases:
+1. **Kernel-side stage bands**: K1 after `console_init()` / `locking_selftest()`,
+   K2 at entry to `kernel_init()`, K3 after `do_initcalls()` (via
+   `kernel_init_freeable()`), and K4 in `run_init_process()` before `kernel_execve`.
+2. **Userspace stage bands**: K4 re-paint on `/init` entry, followed by U1..U5
+   in `/usr/lib/c2s-gadget.sh` (configfs, ACM, NCM, RNDIS, UDC bind).
+3. **Geometry and budget**: 32-row stripes (`C2S_TICK_ROWS = 32`,
+   `C2S_TICK_BYTES = 0x2d000`) placed strictly outside the untrusted Samsung
+   logo zone (rows 1270..2270).
+4. **fbcon takeover semantics**: `fbcon` remains fully enabled
+   (`CONFIG_FB_SIMPLE=y`, `CONFIG_FRAMEBUFFER_CONSOLE=y`, fonts compiled in).
+   During `do_initcalls()`, `simplefb` probe triggers `fbcon` takeover which
+   clears the framebuffer and displays on-screen console text. If driver
+   initcalls stall before takeover, K1..K3 remain visible on panel.
+
+### Milestone ladder
+
+| Stage | Rows | Colour (AARRGGBB) | Where | Meaning |
+|---|---|---|---|---|
+| **K1** | **1152..1183** | **`0xffffc0c0` (pastel red)** | `init/main.c:start_kernel()` after `locking_selftest()` | Core init, irqs enabled, locking selftest passed |
+| **K2** | **1184..1215** | **`0xffc0ffc0` (pastel green)** | `init/main.c:kernel_init()` entry (`rest_init` fail: `0xff804000`) | Thread spawn succeeded, PID 1 init thread started |
+| **K3** | **1216..1247** | **`0xffc0c0ff` (pastel blue)** | `init/main.c:kernel_init()` after `kernel_init_freeable()` | Device setup and driver initcalls finished |
+| *(Logo)* | *1270..2270* | *-* | *Untrusted bootloader logo window* | *Excluded from row budget* |
+| **K4** | **2272..2303** | **`0xffffc0ff` (pastel violet)** | `run_init_process()` (fail: `0xff8b0000`); `/init` entry | Pre-execve attempt / userspace `/init` entry |
+| **U1** | **2304..2335** | **`0xff80ff00` (fail: `0xff808000`)** | `/usr/lib/c2s-gadget.sh` | Configfs mount & base gadget directory setup |
+| **U2** | **2336..2367** | **`0xff00ff80` (fail: `0xff008040`)** | `/usr/lib/c2s-gadget.sh` | ACM console function created & linked (`ttyGS0`) |
+| **U3** | **2368..2399** | **`0xff0080ff` (fail: `0xff004080`)** | `/usr/lib/c2s-gadget.sh` | NCM network function created & linked |
+| **U4** | **2400..2431** | **`0xffff0080` (fail: `0xff800040`)** | `/usr/lib/c2s-gadget.sh` | RNDIS network function created & linked |
+| **U5** | **2432..2463** | **`0xffff8000` (fail: `0xff804000`)** | `/usr/lib/c2s-gadget.sh` | Gadget bound to UDC (full or ACM fallback) |
+
+### Gate changes
+
+* `c2s-rescue/scripts/check-c-milestone-bands.py`: regex updated to support
+  alphanumeric function names (`CALL_RE = re.compile(r"^bl\s+[0-9a-f]+ <(c2s_[a-z0-9_]+)>$")`).
+  Expected table updated with K1, K2, K3, K4 (attempt and fail), and `rest_init` fail.
+  **PASS (20 milestone call site(s) verified)** on diag11 vmlinux; baseline verified clean.
+* `c2s-rescue/tests/fixtures/kernel_init.wrong-row.txt` added as negative
+  control for K2 row (1184 -> 1185) and wired into `verify.sh`.
+* `c2s-rescue/scripts/verify.sh`: dropbear PID read updated for unprivileged runner under
+  root smoke mode. **231 passed, 0 failed** on both diag11 and baseline builds.

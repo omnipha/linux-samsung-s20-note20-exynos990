@@ -119,6 +119,7 @@ c2s_band_paint() {
 # outcome of the stage, including silent skips.
 c2s_band_stage() {
     case "$1" in
+    k4) c2s_band_paint 2272 "$2";;
     u1) c2s_band_paint 2304 "$2";;
     u2) c2s_band_paint 2336 "$2";;
     u3) c2s_band_paint 2368 "$2";;
@@ -290,6 +291,7 @@ c2s_gadget_setup() {
         C2S_GADGET_STATUS=0
         C2S_GADGET_STAGE="bound"
         C2S_GADGET_UDC="${_udc}"
+        c2s_band_stage u5 0xffff8000
         c2s_glog "gadget stage=${C2S_GADGET_STATUS}:${C2S_GADGET_STAGE}" \
                  "udc=${_udc} linked=[${C2S_GADGET_LINKED}]"
     else
@@ -304,12 +306,14 @@ c2s_gadget_setup() {
             C2S_GADGET_STATUS=0
             C2S_GADGET_STAGE="bound-acm-fallback"
             C2S_GADGET_UDC="${_udc}"
+            c2s_band_stage u5 0xffff8000
             c2s_glog "gadget stage=${C2S_GADGET_STATUS}:${C2S_GADGET_STAGE}" \
                      "udc=${_udc} linked=[${C2S_GADGET_LINKED}]" \
                      "- network functions dropped, console channel up"
         else
             C2S_GADGET_STATUS=3
             C2S_GADGET_STAGE="bind-failed-all"
+            c2s_band_stage u5 0xff804000
             c2s_glog "gadget stage=${C2S_GADGET_STATUS}:${C2S_GADGET_STAGE}" \
                      "all bind attempts failed on ${_udc};" \
                      "NOTHING enumerated (functions linked but not bound)"

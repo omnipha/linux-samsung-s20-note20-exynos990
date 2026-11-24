@@ -726,6 +726,10 @@ static noinline void __ref __noreturn rest_init(void)
 	 * we schedule it before we create kthreadd, will OOPS.
 	 */
 	pid = user_mode_thread(kernel_init, NULL, CLONE_FS);
+#ifdef CONFIG_C2S_DIAG
+	if (pid < 0)
+		c2s_band_32(1184, 0xff804000);
+#endif
 	/*
 	 * Pin init on the boot CPU. Task migration is not properly working
 	 * until sched_init_smp() has been run. It will set the allowed
@@ -1223,6 +1227,13 @@ void start_kernel(void)
 	 * too:
 	 */
 	locking_selftest();
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 diag11 milestone K1: locking_selftest() returned.
+	 * Visible Zone A row 1152, pastel red 0xffffc0c0.
+	 */
+	c2s_band_32(1152, 0xffffc0c0);
+#endif
 
 #ifdef CONFIG_BLK_DEV_INITRD
 	if (initrd_start && !initrd_below_start_ok &&
@@ -1568,7 +1579,18 @@ static int run_init_process(const char *init_filename)
 	pr_debug("  with environment:\n");
 	for (p = envp_init; *p; p++)
 		pr_debug("    %s\n", *p);
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 diag11 milestone K4: run_init_process() attempt.
+	 * Visible Zone B row 2272, pastel violet 0xffffc0ff.
+	 */
+	c2s_band_32(2272, 0xffffc0ff);
+#endif
 	ret = kernel_execve(init_filename, argv_init, envp_init);
+#ifdef CONFIG_C2S_DIAG
+	if (ret)
+		c2s_band_32(2272, 0xff8b0000);
+#endif
 	return ret;
 }
 
@@ -1643,12 +1665,27 @@ static int __ref kernel_init(void *unused)
 {
 	int ret;
 
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 diag11 milestone K2: kernel_init() entry.
+	 * Visible Zone A row 1184, pastel green 0xffc0ffc0.
+	 */
+	c2s_band_32(1184, 0xffc0ffc0);
+#endif
+
 	/*
 	 * Wait until kthreadd is all set-up.
 	 */
 	wait_for_completion(&kthreadd_done);
 
 	kernel_init_freeable();
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 diag11 milestone K3: kernel_init_freeable() / do_initcalls() done.
+	 * Visible Zone A row 1216, pastel blue 0xffc0c0ff.
+	 */
+	c2s_band_32(1216, 0xffc0c0ff);
+#endif
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
 

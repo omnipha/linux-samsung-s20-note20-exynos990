@@ -532,7 +532,8 @@ if [ -f "${C_MILESTONE_CHECKER}" ] && [ -x "${VBUILD}" -o -s "${VBUILD}" ]; then
 	for pair in "start_kernel.scanout-wrong-row.txt:the wrong discriminator row (1025):start_kernel" \
 		"start_kernel.scanout-wrong-colour.txt:the wrong fb2 colour (blue->0xff0000fe):start_kernel" \
 		"setup_arch.s3-wrong-row.txt:the wrong S3 row (2752 -> 2753):setup_arch" \
-		"c2s_late_init.wrong-row.txt:the wrong C2..C3 bisect row (2880 -> 2881):c2s_late_init"; do
+		"c2s_late_init.wrong-row.txt:the wrong C2..C3 bisect row (2880 -> 2881):c2s_late_init" \
+		"kernel_init.wrong-row.txt:the wrong K2 row (1184 -> 1185):kernel_init"; do
 		fixture_name="${pair%%:*}"
 		rest="${pair#*:}"
 		fixture_why="${rest%%:*}"
@@ -2109,7 +2110,7 @@ sleep 2
 # The listener writes its own pid; $! is the sudo wrapper in root mode.
 DBLIVE=""
 if [ -f "${SMOKE}/dropbear.pid" ]; then
-	DBLIVE=$(cat "${SMOKE}/dropbear.pid")
+	DBLIVE=$(sudo -n cat "${SMOKE}/dropbear.pid" 2>/dev/null || cat "${SMOKE}/dropbear.pid" 2>/dev/null)
 fi
 
 if [ -n "${DBLIVE}" ] && db_alive "${DBLIVE}"; then

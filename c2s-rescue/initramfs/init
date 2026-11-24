@@ -81,6 +81,7 @@ mount -t configfs configfs /sys/kernel/config
 # In every case ACM is created and linked before NCM/RNDIS, so a network
 # function failure cannot take the ttyGS console channel with it.
 . /usr/lib/c2s-gadget.sh
+c2s_band_stage k4 0xffffc0ff
 
 # Supervised child PIDs (PID 1 must reap its children itself).
 DROPBEAR_PID=""
