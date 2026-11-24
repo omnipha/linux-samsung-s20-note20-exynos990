@@ -20,4 +20,3 @@ else
     echo "c2s-reboot-recovery: reboot applet not found, using sysrq"
     echo b > /proc/sysrq-trigger
 fi
-
