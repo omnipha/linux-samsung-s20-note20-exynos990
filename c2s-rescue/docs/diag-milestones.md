@@ -1462,3 +1462,25 @@ Resolves issue #5: passwordless sudo on device failed with:
    - Negative control ensuring unset `CONFIG_UNIX` is detected and fails.
    - Strengthened functional sudo check in chroot for `/usr/bin/sudo -n /bin/id`.
    - `verify.sh`: **249 passed, 0 failed** on both diag14 and baseline.
+
+## Candidate 14 (turn 2026-11-24): diag15 UFS storage bring-up, block device mapping, and safe boot partition flashing
+
+Delivers issue #5 storage access step: enables internal UFS storage, GPT partition discovery in initramfs, safe boot partition flasher with backup and readback verification, and documents reboot-mode evaluation.
+
+1. **UFS Host and PHY drivers**:
+   - Ported Exynos 990 UFS PHY driver (`drivers/phy/samsung/phy-exynos990-ufs.c`), wired into `phy-samsung-ufs.h`, `phy-samsung-ufs.c`, `Makefile`.
+   - Ported `exynos990_uic_attr`, `exynos990_ufs_pre_link`, `exynos990_ufs_drvs`, and match entry into `drivers/ufs/host/ufs-exynos.c` (source: z3s reference kernel 6.12).
+2. **Device Tree**:
+   - `exynos990.dtsi`: Added fixed-clock stubs (`ufs_unipro`, `ufs_core_clock`), `sysreg_hsi1`, `ufs_0` (HCI, unipro, ufsp reg blocks, SPI 321), and `ufs_0_phy` (PMA, PMU syscon, oscclk).
+   - `exynos990-c2s.dts`: Configured `ufs_vcc_reg` (GPIO fixed regulator on `gpg1 0` GPIO_ACTIVE_HIGH, matching stock `xboot-ldo` anchor), enabled `ufs_0` and `ufs_0_phy`, stripped compatible from inert anchor `&ufs` to prevent platform-device collisions.
+3. **Kernel defconfigs**:
+   - Enabled `CONFIG_SCSI=y`, `CONFIG_BLK_DEV_SD=y`, `CONFIG_SCSI_UFSHCD=y`, `CONFIG_SCSI_UFSHCD_PLATFORM=y`, `CONFIG_SCSI_UFS_EXYNOS=y`, `CONFIG_PHY_SAMSUNG_UFS=y`, `CONFIG_PARTITION_ADVANCED=y`, `CONFIG_EFI_PARTITION=y`, `CONFIG_REBOOT_MODE=y`, `CONFIG_SYSCON_REBOOT_MODE=y` in both `c2s_rescue_diag_defconfig` and `c2s_rescue_defconfig`.
+4. **Userspace storage tools**:
+   - `/usr/sbin/c2s-blockmap`: parses `/sys/class/block/*/uevent` PARTNAME, creates symlinks under `/dev/block/by-name/<partlabel>`.
+   - `/usr/sbin/c2s-flash-boot <image> <expected-sha256>`: strictly checks image size against `/dev/block/by-name/boot`, verifies sha256 of file, ensures target partition resolves to PARTNAME=boot, checks tmpfs RAM space in `/run` before backing up existing partition, writes with `dd`, executes `sync`, reads back and verifies sha256 checksum.
+   - `/init`: calls `scan_storage` immediately following gadget initialization to log block device discovery to `/dev/kmsg` and execute `c2s-blockmap`.
+5. **Reboot-to-recovery investigation**:
+   - Downstream Samsung Exynos 990 bootloaders (sboot/LK) use vendor `sec_reboot.c` and private SMC/TrustZone calls without a documented `syscon-reboot-mode` DT binding or documented magic value for recovery reboot. Rather than guessing magic numbers, reboot-mode DT node is omitted until hardware/bootloader contract is established, while `CONFIG_SYSCON_REBOOT_MODE=y` is pre-enabled in defconfigs.
+6. **Host gates**:
+   - Added `c2s-rescue/scripts/test-flash-boot.sh` testing positive flow and 5 negative control categories.
+   - `verify.sh`: **306 passed, 0 failed** on both diag15 and baseline.

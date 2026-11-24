@@ -307,15 +307,15 @@ the host-side evidence cannot show:
    verification (170 gates + 5 fault cases) is necessary evidence, not
    sufficient.
 
-## Current candidate (diag14 CONFIG_UNIX passwordless sudo fix)
+## Current candidate (diag15 UFS storage bring-up & safe boot flasher)
 
 | Artifact | Size | sha256 |
 |---|---|---|
-| `boot.img` (diag14) | 61,865,984 B | `acf4099ee735924d17ced6b99c19180e6d4e74ffbdabc472907c7064dd70449f` |
-| `Image` (diag14) | 12,876,288 B | `2de054b2a11e191e5c07d125e0133cb929e69bcd5a69ec2471f9bf1d75be1d69` |
-| `boot.img` (baseline) | 61,865,984 B | `bc3d5a46db52970d0123f2d60ffe3ecb128d9ac6d89b93743c85a4df87935bea` |
-| `Image` (baseline) | 12,743,168 B | `c9271e284c396f9767c32730be5e7660acb8944b5beabfc37ffe7a0ead3e4d34` |
-| `initramfs.cpio.gz` | 3,369,013 B | `cd0445405f92cfdeb9efe15bb01559f50e487c62e1b93ef564063fda91975da8` |
+| `boot.img` (diag15) | 61,865,984 B | `025ab1e8adde443fb5ba46029f6cd38f3ee55f2626618f1d0f99599c3a7bfa51` |
+| `Image` (diag15) | 13,285,888 B | `fb9bd8b27e9ab9d7500b2116f1deef3887692a07cd4245b2cf9dfa1a185393ea` |
+| `boot.img` (baseline) | 61,865,984 B | `472206dbfbd7dd7cf44c879fb2bb8fa016c3281fb1db794c650ca9c1fdd85571` |
+| `Image` (baseline) | 13,154,816 B | `289af0434ae3c880903f9e223848500a2d60ae0c78092118bcff60cf286f476d` |
+| `initramfs.cpio.gz` | 3,371,888 B | `8ec27e4575cac1f7d5cb6206c73807ba964740dadaea47bd2432fe08020d4e63` |
 
 Packaged with the operator's public key (fingerprint
 `SHA256:kX1/T8o7ReIa9OJgX0ADSD03lf/XvAFw5lqbAAUonAE`, mode 0600 inside
@@ -323,8 +323,8 @@ the initramfs, proven from the image) for **both** `root` and the
 unprivileged `rescue` login account, plus a `SHA256_RSA4096` /
 rollback 13 AVB footer signed with the authorized host key.
 
-Host verification: **249 passed, 0 failed** on diag14; **249 passed, 0 failed**
+Host verification: **306 passed, 0 failed** on diag15; **306 passed, 0 failed**
 on baseline (`verify.sh`), plus 10/10 host fault-injection checks for the ACM-independent
-fallback, 34/34 paint path / console checks, negative control platform device collision check, and negative control CONFIG_UNIX check. Nothing here demonstrates a boot, USB enumeration, serial
-console output, SSH login or `sudo -n id` on the device - those need
+fallback, 14/14 checks in test-flash-boot.sh covering negative controls, 34/34 paint path / console checks, negative control platform device collision check, negative control CONFIG_SCSI check, and negative control CONFIG_UNIX check. Nothing here demonstrates a boot, USB enumeration, serial
+console output, SSH login or physical UFS probing on the device - those need
 the coordinator's hardware run.

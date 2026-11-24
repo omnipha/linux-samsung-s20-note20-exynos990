@@ -1665,3 +1665,79 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * `fault-injection.sh`: **10 passed, 0 failed**.
 * `verify.sh`: **249 passed, 0 failed** on diag14; **249 passed, 0 failed** on baseline.
 * `CONFIG_UNIX` negative control: unset CONFIG_UNIX rejected by require_cfg.
+
+## Diag15 (Candidate 14): UFS storage bring-up, block device mapping, and safe boot partition flashing
+
+Issue #5 step: provide rescue kernel with access to internal UFS storage, parse GPT partitions without udev, provide host-verified safe boot partition flasher with backup and readback verification, and evaluate reboot-mode.
+
+### Changes
+
+1. **Kernel drivers and defconfig**:
+   - Ported Exynos 990 UFS PHY driver (`drivers/phy/samsung/phy-exynos990-ufs.c`), wired into `phy-samsung-ufs.h`, `phy-samsung-ufs.c`, `Makefile`.
+   - Ported `exynos990_uic_attr`, `exynos990_ufs_pre_link`, `exynos990_ufs_drvs`, and match entry into `drivers/ufs/host/ufs-exynos.c` (backed by reference z3s mainline kernel 6.12).
+   - Enabled `CONFIG_SCSI=y`, `CONFIG_BLK_DEV_SD=y`, `CONFIG_SCSI_UFSHCD=y`, `CONFIG_SCSI_UFSHCD_PLATFORM=y`, `CONFIG_SCSI_UFS_EXYNOS=y`, `CONFIG_PHY_SAMSUNG_UFS=y`, `CONFIG_PARTITION_ADVANCED=y`, `CONFIG_EFI_PARTITION=y`, `CONFIG_REBOOT_MODE=y`, `CONFIG_SYSCON_REBOOT_MODE=y`.
+2. **Device tree**:
+   - `exynos990.dtsi`: Added fixed-clock stubs (`ufs_unipro`, `ufs_core_clock`), `sysreg_hsi1`, `ufs_0` (HCI, unipro, ufsp reg blocks, SPI 321), and `ufs_0_phy` (PMA, PMU syscon, oscclk).
+   - `exynos990-c2s.dts`: Added `ufs_vcc_reg` (GPIO fixed regulator on `gpg1 0` GPIO_ACTIVE_HIGH, matching stock c2s DT `xboot-ldo` anchor), enabled `ufs_0` and `ufs_0_phy`, deleted `compatible` from inert anchor `&ufs` to prevent platform-device collisions.
+3. **Initramfs userspace tools**:
+   - `/usr/sbin/c2s-blockmap`: scans `/sys/class/block/*/uevent`, resolves `PARTNAME`, creates symlinks in `/dev/block/by-name/<partlabel>`.
+   - `/usr/sbin/c2s-flash-boot <image> <expected-sha256>`: strict safeguards: verifies file exists and matches expected sha256; verifies partition exists, resolves to `boot` (refuses any other partition), matches image size; verifies sufficient tmpfs space in `/run` before saving backup; writes with `dd`, executes `sync`, reads back partition and verifies sha256 checksum.
+   - `/init`: calls `scan_storage` immediately following gadget initialization to log block device discovery to `/dev/kmsg` and populate blockmap.
+4. **Reboot-mode evaluation**:
+   - Downstream Samsung Exynos 990 bootloaders (sboot/LK) use vendor `sec_reboot.c` and private SMC/TrustZone calls without a documented `syscon-reboot-mode` DT binding or documented magic value for recovery reboot. Rather than guessing magic numbers, reboot-mode DT node is omitted until hardware/bootloader contract is established, while `CONFIG_SYSCON_REBOOT_MODE=y` is pre-enabled in defconfigs.
+5. **Host gates and test suites**:
+   - Added `c2s-rescue/scripts/test-flash-boot.sh` testing positive write/backup/readback flow and negative controls (wrong hash, wrong size, non-boot target partition, short readback, insufficient RAM).
+   - `verify.sh`: added `CONFIG_SCSI` presence and negative control rejection checks, cpio permissions/ownership for new tools, `/init` storage checks, DT UFS node validation, and execution of `test-flash-boot.sh`.
+
+### Build commands (build host)
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag15-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag15-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag15-out
+```
+
+Paired baseline (`CONFIG_C2S_DIAG` off) built into `/tmp/opencode/c2s-diag15-base-out`:
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag15-base-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag15-base-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag15-base-out
+```
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag15, signed) | `/tmp/opencode/c2s-diag15-out/boot.img` | 61 865 984 | `025ab1e8adde443fb5ba46029f6cd38f3ee55f2626618f1d0f99599c3a7bfa51` |
+| Image (diag15) | `/tmp/opencode/c2s-diag15-out/kbuild/arch/arm64/boot/Image` | 13 285 888 | `fb9bd8b27e9ab9d7500b2116f1deef3887692a07cd4245b2cf9dfa1a185393ea` |
+| DTB | `/tmp/opencode/c2s-diag15-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 143 360 | `6544b0de6d1fd4ed05836f5a4344a1f15805d95541c9d713acc3d86e4776c502` |
+| initramfs | `/tmp/opencode/c2s-diag15-out/work/initramfs.cpio.gz` | 3 371 888 | `8ec27e4575cac1f7d5cb6206c73807ba964740dadaea47bd2432fe08020d4e63` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag15-base-out/boot.img` | 61 865 984 | `472206dbfbd7dd7cf44c879fb2bb8fa016c3281fb1db794c650ca9c1fdd85571` |
+| Image (baseline) | `/tmp/opencode/c2s-diag15-base-out/kbuild/arch/arm64/boot/Image` | 13 154 816 | `289af0434ae3c880903f9e223848500a2d60ae0c78092118bcff60cf286f476d` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 143 360 B == kbuild DTB.
+
+### Host evidence
+
+* `check-c-milestone-bands.py` on diag15 vmlinux: **PASS (20 milestone call site(s) verified)**.
+* `check-c-milestone-bands.py --expect-none` on baseline vmlinux: **PASS (no milestone call sites; baseline build)**.
+* `check-c2s-paint-paths.py`: **PASS (34 paint-path and console properties verified)**.
+* `check-platform-device-collisions.py`: **PASS (0 collisions across 9 merged DTBs)**.
+* `fault-injection.sh`: **10 passed, 0 failed**.
+* `test-flash-boot.sh`: **14 passed, 0 failed** (positive and all negative control tests verified).
+* `verify.sh`: **306 passed, 0 failed** on diag15; **306 passed, 0 failed** on baseline.
+* `CONFIG_SCSI` negative control: unset CONFIG_SCSI rejected by require_cfg.
+* `CONFIG_UNIX` negative control: unset CONFIG_UNIX rejected by require_cfg.
