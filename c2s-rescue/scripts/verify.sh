@@ -505,31 +505,41 @@ if [ -f "${C_MILESTONE_CHECKER}" ] && [ -x "${VBUILD}" -o -s "${VBUILD}" ]; then
 			bad "baseline build carries C milestone call sites: $(printf '%s\n' "${C_MS_OUT}" | tr '\n' '; ')"
 		fi
 	fi
-	# Negative control: a saved listing with the row changed by one must be
-	# rejected, otherwise the gate is insensitive to the very defect it
-	# exists for (row/colour drift at a call site).
+	# Negative control for the empty-expectation requirement (diag9): the
+	# USB milestone call sites were removed, and EXPECTED[] for
+	# gether_connect is now the positive statement "this function must
+	# carry no milestone call site at all".  A saved listing that still
+	# has one must be rejected - otherwise nothing would notice a USB
+	# milestone creeping back in, because the callee still exists.
 	if [ -s "${C_MILESTONE_FIXTURE}" ]; then
 		if python3 "${C_MILESTONE_CHECKER}" --disasm-file \
 			"${C_MILESTONE_FIXTURE}" --function gether_connect \
 			> /dev/null 2>&1; then
-			bad "C milestone gate negative control FAILED: the wrong-row listing was accepted - the gate cannot detect row/colour drift"
+			bad "C milestone gate negative control FAILED: the leftover gether_connect call site was accepted - the gate does not enforce the empty expectation"
 		else
-			ok "C milestone gate negative control: the wrong-row listing IS rejected (gate is sensitive)"
+			ok "C milestone gate negative control: the leftover gether_connect call site IS rejected (empty expectation enforced)"
 		fi
 	else
 		note "no C milestone fixture at ${C_MILESTONE_FIXTURE}; negative control skipped"
 	fi
-	# Negative controls for the scanout discriminator (issue #5 change B):
-	# it is the only milestone carrying four arguments, so a gate that had
-	# not learned to read w2/w3 would accept either of these listings while
-	# still passing the real build.
-	for pair in "start_kernel.scanout-wrong-row.txt:the wrong discriminator row (1665)" \
-		"start_kernel.scanout-wrong-colour.txt:the wrong fb2 colour (blue->0xff0000fe)"; do
-		fixture_name="${pair%%:*}"; fixture_why="${pair#*:}"
+	# Negative controls for the scanout discriminator (issue #5 change B)
+	# and for the setup_arch() bands (diag9): the discriminator is the only
+	# milestone carrying four arguments, so a gate that had not learned to
+	# read w2/w3 would accept either of the first two listings while still
+	# passing the real build.  The third listing moves S3 by one row, so
+	# a gate that had not learned the setup_arch() call sites would accept
+	# it too.  The third field is the function the listing belongs to.
+	for pair in "start_kernel.scanout-wrong-row.txt:the wrong discriminator row (1025):start_kernel" \
+		"start_kernel.scanout-wrong-colour.txt:the wrong fb2 colour (blue->0xff0000fe):start_kernel" \
+		"setup_arch.s3-wrong-row.txt:the wrong S3 row (2752 -> 2753):setup_arch"; do
+		fixture_name="${pair%%:*}"
+		rest="${pair#*:}"
+		fixture_why="${rest%%:*}"
+		fixture_fn="${rest##*:}"
 		scand_fixture="${RESCUE_DIR}/tests/fixtures/${fixture_name}"
 		if [ -s "${scand_fixture}" ]; then
 			if python3 "${C_MILESTONE_CHECKER}" --disasm-file \
-				"${scand_fixture}" --function start_kernel \
+				"${scand_fixture}" --function "${fixture_fn}" \
 				> /dev/null 2>&1; then
 				bad "C milestone gate negative control FAILED: ${fixture_why} was accepted"
 			else
@@ -541,6 +551,59 @@ if [ -f "${C_MILESTONE_CHECKER}" ] && [ -x "${VBUILD}" -o -s "${VBUILD}" ]; then
 	done
 else
 	note "C milestone checker or vmlinux missing; call-site gate skipped"
+fi
+
+# ------------------------------------------- C paint paths (issue #5, diag9)
+# The call-site gate sees *which* row a milestone paints; it cannot see
+# *through which alias*, and diag9's fb2 is deliberately reserved without
+# no-map so that its only correct post-paging_init() alias is
+# phys_to_virt().  Three defects would each be invisible on the panel but
+# fatal for the readout: fb2 skipped while fb0/fb1 fail, fb2 written through
+# the linear address before paging_init() or through the identity alias
+# after cpu_uninstall_idmap(), and a milestone band placed in the window
+# that has neither mapping.  This gate reads the two sources and pins all
+# three; the negative control is a copy of the painter with the defects
+# put back.
+PAINT_PATH_CHECKER="${SCRIPT_DIR}/check-c2s-paint-paths.py"
+PAINT_PATH_FIXTURE="${RESCUE_DIR}/tests/fixtures/c2s_diag_bands.skip-fb2-and-abort.txt"
+PAINT_PATH_SOURCE="${REPO_DIR}/arch/arm64/kernel/c2s_diag_bands.c"
+if [ -f "${PAINT_PATH_CHECKER}" ]; then
+	if PP_OUT=$(python3 "${PAINT_PATH_CHECKER}" 2>&1); then
+		ok "C paint paths: $(printf '%s\n' "${PP_OUT}" | tail -n 1)"
+	else
+		bad "C paint path gate FAILED: $(printf '%s\n' "${PP_OUT}" | tr '\n' '; ')"
+	fi
+	if [ -s "${PAINT_PATH_FIXTURE}" ]; then
+		if python3 "${PAINT_PATH_CHECKER}" --bands-c-only \
+			--bands-c "${PAINT_PATH_FIXTURE}" > /dev/null 2>&1; then
+			bad "paint path gate negative control FAILED: the skip-fb2-and-abort fixture was accepted - the gate cannot detect the defect it exists for"
+		else
+			ok "paint path gate negative control: the skip-fb2-and-abort fixture IS rejected"
+		fi
+	else
+		note "no paint path fixture at ${PAINT_PATH_FIXTURE}; negative control skipped"
+	fi
+	# Second negative control: the setup.c side.  The painter fixture only
+	# proves the fb2/independence assertions; the forbidden-window
+	# assertion is proved by a setup_arch() statement order with S2
+	# painted between cpu_uninstall_idmap() and paging_init().
+	PAINT_PATH_SETUP_FIXTURE="${RESCUE_DIR}/tests/fixtures/setup_arch.band-in-forbidden-window.txt"
+	if [ -s "${PAINT_PATH_SETUP_FIXTURE}" ]; then
+		if python3 "${PAINT_PATH_CHECKER}" \
+			--setup-c "${PAINT_PATH_SETUP_FIXTURE}" > /dev/null 2>&1; then
+			bad "paint path gate negative control FAILED: the band-in-forbidden-window fixture was accepted - a band could be placed where there is no identity and no linear mapping"
+		else
+			ok "paint path gate negative control: the band-in-forbidden-window fixture IS rejected"
+		fi
+	else
+		note "no setup.c fixture at ${PAINT_PATH_SETUP_FIXTURE}; negative control skipped"
+	fi
+	# The source must still be there at all: a gate that silently reads
+	# nothing would pass vacuously.
+	check "paint path gate reads the real painter" \
+		test -s "${PAINT_PATH_SOURCE}"
+else
+	note "paint path checker missing; mapping-path gate skipped"
 fi
 
 # ------------------------------------------------- console font (issue #4)
@@ -1696,12 +1759,19 @@ check "reserved-memory cells match root (2/1)" \
 check "reserved-memory children use 3-cell reg" \
 	grep -qE '<0x00 0xf1000000 0x10f6800>' "${DTB_TXT}"
 # ------------------------------------------------ issue #5 change A: fb2
-# fb2 (0xfac00000) is the third splash-scanout candidate. Without a no-map
-# reservation it is ordinary RAM: memblock hands it to the buddy, and
-# ioremap_wc() refuses to map it (pfn_is_map_memory() is true), so only the
-# ID-map phase can ever paint it - which is exactly what made "no cyan"
-# from C2 onwards prove nothing. The reservation must cover the whole
-# 1440x3088x4 buffer and must be no-map.
+# fb2 (0xfac00000) is the third splash-scanout candidate.  diag9 reserves it
+# WITHOUT no-map on purpose: memblock_reserve() keeps the page allocator
+# off it (the range never reaches memblock_free_all(), so painting it after
+# allocation is still safe) while it stays in memblock.memory, which is what
+# map_mem() walks into the linear map.  From paging_init() on,
+# phys_to_virt(0xfac00000) is a cacheable paint address that shares no code
+# with early_memremap()/ioremap_wc() - the whole point of diag9, because
+# ioremap_wc() refuses RAM (__ioremap_prot() WARNs on pfn_is_map_memory()).
+#
+# So the gate is inverted with respect to diag8: fb2 must NOT carry no-map
+# (with it, phys_to_virt() would fault) while fb0 and fb1 MUST carry no-map
+# (without it, they would be in the linear map and ioremap_wc() would
+# refuse them).  A swap of the two is the defect this gate exists for.
 PYFB2=$(python3 - "${DTB}" "${SCRIPT_DIR}/fdt.py" <<'PYEOF'
 import sys
 sys.path.insert(0, sys.argv[2].rsplit('/', 1)[0])
@@ -1716,10 +1786,11 @@ for n in root.walk():
                   (' '.join('%#x' % c for c in cells),
                    ' '.join('%#x' % c for c in want)))
             sys.exit(1)
-        if n.prop('no-map') is None:
-            print('BAD fb2 reservation lacks no-map (memblock would own it)')
+        if n.prop('no-map') is not None:
+            print('BAD fb2 reservation carries no-map - it would be absent '
+                  'from the linear map and phys_to_virt() would fault')
             sys.exit(1)
-        print('OK fb2 no-map reservation 0xfac00000..0xfbcf6800 present')
+        print('OK fb2 reservation 0xfac00000..0xfbcf6800 present, no no-map')
         sys.exit(0)
 print('BAD reserved-memory/framebuffer@fac00000 missing from DTB')
 sys.exit(1)
@@ -1729,6 +1800,59 @@ if [ "${PYFB2#OK*}" != "${PYFB2}" ]; then
 	ok "DTB ${PYFB2#OK }"
 else
 	bad "DTB ${PYFB2#BAD }"
+fi
+# fb0 and fb1 are the opposite case: no-map is what keeps them out of the
+# linear map, which is what makes ioremap_wc() legal for them.  fb1 has no
+# reservation of its own - it lies wholly inside the vendor audio
+# reservation - so the region is matched by *containment*, not by base.
+PYFB01=$(python3 - "${DTB}" "${SCRIPT_DIR}/fdt.py" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[2].rsplit('/', 1)[0])
+import fdt
+root = fdt.parse(open(sys.argv[1], 'rb').read())
+want = 0x10f6800
+# (base, name) of each splash buffer
+buffers = [(0xf1000000, 'fb0'), (0xf9800000, 'fb1')]
+regions = []
+for n in root.walk():
+    if not n.path.startswith('/reserved-memory/'):
+        continue
+    reg = n.prop('reg')
+    if reg is None:
+        continue
+    cells = fdt.cells(reg)
+    if len(cells) != 3:
+        continue
+    regions.append((cells[1], cells[2], n.prop('no-map') is not None,
+                    n.path))
+bad = []
+for base, name in buffers:
+    end = base + want
+    covering = [r for r in regions
+                if r[0] <= base and r[0] + r[1] >= end]
+    if not covering:
+        bad.append('%s (0x%08x..0x%08x) is not covered by a '
+                   'reserved-memory region' % (name, base, end))
+        continue
+    # Every covering region must be no-map, otherwise any part of the
+    # buffer would land in the linear map.
+    nonomap = [r for r in covering if not r[2]]
+    if nonomap:
+        bad.append('%s reservation %s lacks no-map - it would be linearly '
+                   'mapped and ioremap_wc() would refuse it'
+                   % (name, nonomap[0][3]))
+if bad:
+    print('BAD ' + '; '.join(bad))
+    sys.exit(1)
+print('OK fb0/fb1 are covered by no-map reservations of the full '
+      '1440x3088x4 buffer')
+sys.exit(0)
+PYEOF
+)
+if [ "${PYFB01#OK*}" != "${PYFB01}" ]; then
+	ok "DTB ${PYFB01#OK }"
+else
+	bad "DTB ${PYFB01#BAD }"
 fi
 # ------------------------------------------------ issue #5 change C: speed
 # Only usb2-phy exists on this port (no usb3-phy anywhere in the tree), so

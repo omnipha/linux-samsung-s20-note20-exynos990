@@ -17,7 +17,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/sched/task_stack.h>
 #include <linux/workqueue.h>
-#include <linux/c2s_diag.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
@@ -1442,8 +1441,6 @@ int usb_add_gadget(struct usb_gadget *gadget)
 	if (ret)
 		goto err_del_gadget;
 
-	/* Issue #5: UDC registered with the gadget core, rows 1024..1151. */
-	c2s_band(1024, 0xffadd8e6);
 	return 0;
 
  err_del_gadget:
@@ -1648,8 +1645,6 @@ static int gadget_bind_driver(struct device *dev)
 
 	mutex_unlock(&udc->connect_lock);
 
-	/* Issue #5: gadget driver bound and connected, rows 1280..1407. */
-	c2s_band(1280, 0xff32cd32);
 	kobject_uevent(&udc->dev.kobj, KOBJ_CHANGE);
 	return 0;
 
@@ -1665,8 +1660,6 @@ static int gadget_bind_driver(struct device *dev)
 	driver->unbind(udc->gadget);
 
  err_bind:
-	/* Issue #5: bind/udc_start/connect failed, rows 1408..1535. */
-	c2s_band(1408, 0xfffa8072);
 	if (ret != -EISNAM)
 		dev_err(&udc->dev, "failed to start %s: %d\n",
 			driver->function, ret);

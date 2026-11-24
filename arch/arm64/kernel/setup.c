@@ -8,6 +8,7 @@
 
 #include <linux/acpi.h>
 #include <linux/export.h>
+#include <linux/c2s_diag.h>
 #include <linux/kernel.h>
 #include <linux/stddef.h>
 #include <linux/ioport.h>
@@ -290,6 +291,19 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	early_ioremap_init();
 
 	setup_machine_fdt(__fdt_pointer);
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 milestone S1 (rows 2496..2623, colour 0xff008080).
+	 * Placed here on purpose: the boot ID map is still installed in
+	 * TTBR0 (cpu_uninstall_idmap() has not run yet), so all three
+	 * splash buffers are reachable at their physical addresses, and
+	 * the band is painted with the same identity path C1 and the
+	 * scanout discriminator use.  It therefore separates "setup_arch()
+	 * never got this far" from "the later, mapping-dependent milestones
+	 * could not be painted".
+	 */
+	c2s_band_early(2496, 0xff008080);
+#endif
 
 	/*
 	 * Initialise the static keys early as they may be enabled by the
@@ -318,6 +332,17 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	 * point to zero page to avoid speculatively fetching new entries.
 	 */
 	cpu_uninstall_idmap();
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Publish that the boot ID map is gone.  memstart_addr still holds
+	 * its -1 sentinel until arm64_memblock_init() below, so the sentinel
+	 * on its own would tell c2s_band_early() that the identity path is
+	 * live when it is not - a band painted through it from here on would
+	 * fault instead of appearing.  No milestone band may be painted
+	 * between this line and paging_init(): see the S2 comment.
+	 */
+	c2s_mark_idmap_gone();
+#endif
 
 	xen_early_init();
 	efi_init();
@@ -332,6 +357,20 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	arm64_memblock_init();
 
 	paging_init();
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Publish that the linear map exists, then paint milestone S2
+	 * (rows 2624..2751, colour 0xff800080).  The order matters: fb2 is
+	 * reached through phys_to_virt() and that alias is only in the page
+	 * tables once map_mem() has run inside paging_init().  Before it,
+	 * the window from cpu_uninstall_idmap() here is unusable for a band
+	 * of any kind - no identity mapping, no linear mapping - which is
+	 * why S1 sits above that point and no c2s_* paint is allowed in
+	 * between (enforced by c2s-rescue/scripts/check-c2s-paint-paths.py).
+	 */
+	c2s_mark_linear_ready();
+	c2s_band_early(2624, 0xff800080);
+#endif
 
 	acpi_table_upgrade();
 
@@ -375,6 +414,19 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 			"This indicates a broken bootloader or old kernel\n",
 			boot_args[1], boot_args[2], boot_args[3]);
 	}
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 milestone S3 (rows 2752..2879, colour 0xffc0c0c0): the
+	 * last statement of setup_arch().  By now the linear map exists, so
+	 * all three buffers can be painted - fb0/fb1 through early_memremap()
+	 * and fb2 through its linear alias.  It is the last band of the
+	 * setup_arch() group, so "S3 present" means setup_arch() ran to its
+	 * end; "S3 absent" says nothing about *why* (the logo area may be
+	 * opaque over it, the paint may have failed, or the kernel may have
+	 * died before it).
+	 */
+	c2s_band_early(2752, 0xffc0c0c0);
+#endif
 }
 
 static inline bool cpu_can_disable(unsigned int cpu)

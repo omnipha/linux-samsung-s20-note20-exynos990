@@ -36,35 +36,49 @@ import sys
 #   c2s_scanout_probe(u32 row, c0, c1, c2)       -> (row, fb0, fb1, fb2)
 #   c2s_band(u32 row, u32 colour)                -> (row, colour)
 #   c2s_late_init(void)                          -> ()
+#   c2s_mark_idmap_gone(void)                    -> ()
+#   c2s_mark_linear_ready(void)                  -> ()
 # An expectation lists only the arguments this gate pins; extra arguments
 # of a call site are ignored.  The order is the *execution* order of the
-# milestones, which for the /init failure case is two paint paths over the
-# same row.
+# milestones within a function.
+#
+# An EMPTY list means something specific and is not the same as a missing
+# key: "this function must carry no milestone call site at all".  That is
+# how the deferred USB rows (diag10) are pinned - the band layout moved the
+# C ladder into rows that cannot coexist with 1024/1152/1280/1408/1536, so
+# a USB milestone reappearing is a regression even though the callee itself
+# still exists in the tree.  A key that is absent from this table entirely
+# is not checked at all (only reachable through an explicit --function).
 EXPECTED = {
     "start_kernel": [
         ("c2s_band_early", (640, 0xFFFFFF00)),
         # Issue #5 change B - the scanout discriminator sits between C1 and
         # C2, in the same ID-map phase: fb0 red, fb1 green, fb2 blue at
-        # rows 1664..1791.
-        ("c2s_scanout_probe", (1664, 0xFFFF0000, 0xFF00FF00, 0xFF0000FF)),
+        # rows 1024..1151 (moved here from 1664: that row is inside the
+        # logo band and could not be read back).
+        ("c2s_scanout_probe", (1024, 0xFFFF0000, 0xFF00FF00, 0xFF0000FF)),
         ("c2s_band_early", (768, 0xFF00FFFF)),
         ("c2s_band_early", (896, 0xFFFFA500)),
         ("c2s_late_init", ()),
     ],
-    "usb_add_gadget": [
-        ("c2s_band", (1024, 0xFFADD8E6)),
+    # setup_arch(): S1 before cpu_uninstall_idmap(), then the two mapping
+    # markers, then S2 right after paging_init() and S3 at the end.
+    # check-c2s-paint-paths.py pins that arrangement against the source;
+    # this table pins rows and colours against the disassembly.
+    "setup_arch": [
+        ("c2s_band_early", (2496, 0xFF008080)),
+        ("c2s_mark_idmap_gone", ()),
+        ("c2s_mark_linear_ready", ()),
+        ("c2s_band_early", (2624, 0xFF800080)),
+        ("c2s_band_early", (2752, 0xFFC0C0C0)),
     ],
-    "run_init_process": [
-        ("c2s_band", (1152, 0xFFFFC0CB)),
-        ("c2s_band", (1152, 0xFF8B0000)),
-    ],
-    "gadget_bind_driver": [
-        ("c2s_band", (1280, 0xFF32CD32)),
-        ("c2s_band", (1408, 0xFFFA8072)),
-    ],
-    "gether_connect": [
-        ("c2s_band", (1536, 0xFF00FF7F)),
-    ],
+    # diag9 removed every USB milestone call site: rows 1280/1408/1536 sit
+    # in the logo band, and 1024/1152 became the discriminator and are
+    # simply dropped until diag10 re-places them.
+    "usb_add_gadget": [],
+    "run_init_process": [],
+    "gadget_bind_driver": [],
+    "gether_connect": [],
 }
 
 # Every function that must be scanned for the baseline negative case.
@@ -305,8 +319,22 @@ def main():
                                 % (fn, found))
             continue
 
-        expected = EXPECTED.get(fn, [])
+        if fn not in EXPECTED:
+            # Not in the table at all: nothing is asserted about this
+            # function (only reachable through an explicit --function).
+            continue
+
+        expected = EXPECTED[fn]
         if not expected:
+            # An empty list is a positive requirement: this function must
+            # carry no milestone call site at all.  It is what pins the
+            # removal of the USB milestone rows in diag9 - the callee
+            # still exists in the tree, so nothing else would notice a
+            # call site creeping back in.
+            total += 1
+            if found:
+                failures.append("%s: must carry no milestone call site, "
+                                "found %s" % (fn, found))
             continue
 
         # Match expectations in order; each expectation consumes one site.

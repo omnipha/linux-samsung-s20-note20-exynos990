@@ -1037,12 +1037,16 @@ void start_kernel(void)
 	/*
 	 * Issue #5 change B - scanout discriminator.  Painted in the same
 	 * ID-map phase, one kick after all three buffers are written, at
-	 * rows 1664..1791 (the first free row after C7's 1536..1663): fb0
+	 * rows 1024..1151 (the first free row after C3's 896..1023): fb0
 	 * red, fb1 green, fb2 blue.  The panel then names the buffer the
 	 * DECON scans out, which is what makes "no cyan" from C2 onwards
 	 * mean something at all.
+	 *
+	 * The row moved from 1664 to 1024 in diag9: 1664 lies inside the
+	 * row band the owner's photo shows as the Samsung logo, where a
+	 * band cannot be read back at all.
 	 */
-	c2s_scanout_probe(1664, 0xffff0000, 0xff00ff00, 0xff0000ff);
+	c2s_scanout_probe(1024, 0xffff0000, 0xff00ff00, 0xff0000ff);
 #endif
 
 	set_task_stack_end_magic(&init_task);
@@ -1066,10 +1070,10 @@ void start_kernel(void)
 #ifdef CONFIG_C2S_DIAG
 	/*
 	 * Issue #5 milestone C2: setup_arch() is done, so the boot ID map
-	 * has been uninstalled (cpu_uninstall_idmap) and memstart_addr is
-	 * valid, while early_ioremap_init() has already run - i.e. this is
-	 * the early_memremap() phase of c2s_band_early().  Rows 768..795,
-	 * colour cyan 0xff00ffff.
+	 * has been uninstalled (cpu_uninstall_idmap) and the linear map
+	 * exists (paging_init), while early_ioremap_init() has already run
+	 * - i.e. this is the early_memremap() phase of c2s_band_early().
+	 * Rows 768..895, colour cyan 0xff00ffff.
 	 */
 	c2s_band_early(768, 0xff00ffff);
 #endif
@@ -1564,21 +1568,7 @@ static int run_init_process(const char *init_filename)
 	pr_debug("  with environment:\n");
 	for (p = envp_init; *p; p++)
 		pr_debug("    %s\n", *p);
-#ifdef CONFIG_C2S_DIAG
-	/*
-	 * Issue #5 milestone C6: /init exec attempted, rows 1152..1279.
-	 * Painted before the attempt so the band appears even if exec never
-	 * returns; a failing attempt then overpaints the same row in dark
-	 * red, so the final colour of row 1152 separates the two cases
-	 * (pink 0xffffc0cb = attempted/ok, dark red 0xff8b0000 = failed).
-	 */
-	c2s_band(1152, 0xffffc0cb);
-#endif
 	ret = kernel_execve(init_filename, argv_init, envp_init);
-#ifdef CONFIG_C2S_DIAG
-	if (ret)
-		c2s_band(1152, 0xff8b0000);
-#endif
 	return ret;
 }
 

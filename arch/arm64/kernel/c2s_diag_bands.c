@@ -12,28 +12,33 @@
  *  c2s_band_early()  -  __init.  Covers two phases, both selected at run
  *      time from state that is already published when we get called:
  *
- *      1. "ID map" - memstart_addr still holds its documented -1 sentinel
- *         (arch/arm64/mm/init.c), i.e. arm64_memblock_init() has not run,
- *         so setup_arch() has not finished and TTBR0 still holds the
- *         initial ID map built by create_init_idmap()
- *         (arch/arm64/kernel/pi/map_range.c).  That map identity-maps the
- *         three splash framebuffers as PAGE_KERNEL and DECON0 as device
- *         memory, so the physical addresses are usable directly as virtual
- *         addresses.  The red M2 band painted in __primary_switched()
- *         proves the mapping still works after the kernel image has been
- *         relocated.
+ *      1. "ID map" - the boot ID map built by create_init_idmap()
+ *         (arch/arm64/kernel/pi/map_range.c) is still the mapping in
+ *         TTBR0.  That map identity-maps the three splash framebuffers as
+ *         PAGE_KERNEL and DECON0 as device memory, so the physical
+ *         addresses are usable directly as virtual addresses.  The red M2
+ *         band painted in __primary_switched() proves the mapping still
+ *         works after the kernel image has been relocated.
+ *
+ *         The phase is not decided by memstart_addr alone: that sentinel
+ *         flips to a valid value in arm64_memblock_init(), which runs
+ *         *after* cpu_uninstall_idmap(), so there is a window in which
+ *         memstart_addr says "ID map" while TTBR0 already points at
+ *         reserved_pg_dir.  setup_arch() posts c2s_mark_idmap_gone()
+ *         right after cpu_uninstall_idmap() and that marker - not the
+ *         sentinel - closes the window.
  *
  *         Constraint: no call site may sit inside setup_arch() between
- *         cpu_uninstall_idmap() (arch/arm64/kernel/setup.c:320) and
- *         arm64_memblock_init() (setup.c:332) - there the ID map is
- *         already uninstalled while memstart_addr is still -1.  All call
- *         sites live in init/main.c outside setup_arch(), which satisfies
- *         this.
+ *         cpu_uninstall_idmap() (arch/arm64/kernel/setup.c) and
+ *         paging_init() - there the ID map is already uninstalled and the
+ *         linear map does not exist yet.  The S1/S2/S3 call sites are
+ *         placed outside that window and
+ *         c2s-rescue/scripts/check-c2s-paint-paths.py pins their position
+ *         relative to cpu_uninstall_idmap()/paging_init().
  *
- *      2. "early_*remap" - memstart_addr is valid but the __init memory
- *         has not been released yet (system_state < SYSTEM_FREEING_INITMEM),
- *         so early_ioremap_init() has already run (setup.c:290, which
- *         precedes arm64_memblock_init() at setup.c:332) and the
+ *      2. "early_*remap" - the __init memory has not been released yet
+ *         (system_state < SYSTEM_FREEING_INITMEM), so early_ioremap_init()
+ *         has already run (setup.c, early in setup_arch()) and the
  *         early_memremap()/early_ioremap() helpers are still callable.
  *         The framebuffer is reached through early_memremap(), which hands
  *         out cacheable normal memory in chunks of at most SZ_256K
@@ -47,13 +52,14 @@
  *
  *  c2s_late_init()  -  __init, called once from start_kernel() right after
  *      mm_core_init() (init/main.c), where vmap and slab come up.  It takes
- *      the two long-lived mappings the late path needs: an ioremap_wc()
- *      (PROT_NORMAL_NC, write combining) window over each of fb0/fb1, plus
- *      a device ioremap() of DECON0.  ioremap_wc() is the same alias
- *      simplefb takes for fb0 (drivers/video/fbdev/simplefb.c:602), so the
- *      band is written through the same memory type fbcon uses - a
- *      cacheable alias of an NC range would be a mismatched-attribute
- *      alias.
+ *      the long-lived mappings the late path needs: an ioremap_wc()
+ *      (PROT_NORMAL_NC, write combining) window over each of fb0/fb1, the
+ *      linear alias of fb2 (which ioremap_wc() would refuse, because fb2 is
+ *      now ordinary reserved RAM), and a device ioremap() of DECON0.
+ *      ioremap_wc() is the same alias simplefb takes for fb0
+ *      (drivers/video/fbdev/simplefb.c:602), so those bands are written
+ *      through the same memory type fbcon uses - a cacheable alias of an
+ *      NC range would be a mismatched-attribute alias.
  *
  *  c2s_band()  -  plain .text.  No allocation and no sleeping: a volatile
  *      fill of the pre-taken window, a cache clean (which ends in dsb sy,
@@ -65,24 +71,68 @@
  *      vmalloc would be illegal.  Until c2s_late_init() has run it is a
  *      no-op, so early callers cannot hit vmap before it exists.
  *
- * Where a buffer may be written:
+ * Where a buffer may be written (issue #5, diag9):
  *
  *  - 0xf1000000 (fb0) and 0xf9800000 (fb1) live inside no-map reserved
  *    regions (reserved-memory/framebuffer@f1000000 and
  *    reserved-memory/audio@f7fb0000), so memblock never hands them out,
- *    they are absent from the linear map (map_mem() skips nomap), and
- *    pfn_is_map_memory() is false for them: safe to write and to ioremap()
- *    at any time.
- *  - 0xfac00000 (fb2) is the third splash-scanout candidate.  It used to be
- *    unreserved RAM, so only the ID-map phase could paint it - which made
- *    every band from C2 on invisible if the DECON happens to scan fb2, and
- *    that ambiguity made "no cyan" prove nothing at all.  It is now reserved
- *    by reserved-memory/framebuffer@fac00000 { no-map } in
- *    exynos990-c2s.dts, so memblock never owns it either and fb2 is painted
- *    in all three phases like fb0/fb1.  If that reservation is ever dropped
- *    from the DT, ioremap_wc() refuses to map RAM, the late path skips fb2
- *    (see c2s_late_init()'s per-buffer pr_err) and only the ID-map phase
- *    still paints it.
+ *    they are absent from the linear map (map_mem() skips nomap via
+ *    should_skip_region()) and pfn_is_map_memory() is false for them:
+ *    safe to write and to ioremap() at any time, but NOT reachable
+ *    through phys_to_virt().  They are always painted through
+ *    early_memremap() or ioremap_wc().
+ *
+ *  - 0xfac00000 (fb2) is reserved WITHOUT no-map, so it stays in
+ *    memblock.memory, is never handed to the buddy (memblock_reserve)
+ *    and IS covered by the linear map.  pfn_is_map_memory() is therefore
+ *    true there: ioremap_wc() refuses it, but phys_to_virt() is a valid
+ *    cacheable alias from paging_init() onwards.  fb2 thus gets a paint
+ *    path that shares no code with early_memremap()/ioremap_wc() - which
+ *    is what lets a photo separate "kernel died here" from "the mapping
+ *    helper failed here" when the DECON scans fb2.
+ *
+ *  Phase selection, and why fb2 is never skipped:
+ *
+ *   - c2s_idmap_alive() means the boot ID map is still the mapping in
+ *     TTBR0, so *all three* buffers are written through their identity
+ *     aliases, fb2 included.  fb2 is not special here: the same physical
+ *     memory, a different virtual address.  Skipping it would make the
+ *     scanout probe report only fb0/fb1 and silently hide fb2.
+ *
+ *   - Once the ID map is gone, fb0/fb1 go through early_memremap() (they
+ *     are no-map reservations: fixmap only) and fb2 - reserved without
+ *     no-map - goes through phys_to_virt(), which is a cacheable alias of
+ *     the linear map.  That branch is gated on c2s_linear_alive(), which
+ *     only becomes true after paging_init(), i.e. after
+ *     cpu_uninstall_idmap(): in between there is neither an ID map nor a
+ *     linear map, and memstart_addr alone cannot express that (it flips
+ *     valid at arm64_memblock_init(), two lines *before* paging_init()).
+ *     The markers that drive both flags are posted by setup_arch().
+ *
+ *   - c2s_late_init() keeps ioremap_wc() for fb0/fb1 (write-combining,
+ *     matches simplefb) and the linear phys_to_virt() alias for fb2, because
+ *     ioremap_wc() refuses RAM (pfn_is_map_memory() is true for fb2 now).
+ *
+ *  Layout rule (owner photo 2026-11-24 10:16, diag8 run - HYPOTHESIS,
+ *  not proven): the rows the photo shows as the Samsung logo are treated
+ *  as untrusted for readout and no band is placed there.  Measured logo
+ *  area ~rows 1300..2270 of the 3088-row panel; bands may only be placed
+ *  in rows 0..1269 or 2271..3087.  A missing band is never proof that
+ *  execution stopped - the buffer may have failed to paint, its cache
+ *  clean may not have reached DRAM, or the DECON kick/scanout may have
+ *  failed.  An ID-map colour probe only establishes that the ID-map path
+ *  and one DECON kick worked once; it says nothing about later mapping
+ *  or refresh success.
+ *
+ *  Forbidden call-site window: cpu_uninstall_idmap() .. paging_init()
+ *  (arch/arm64/kernel/setup.c).  In the first half of it the ID map is
+ *  already uninstalled while memstart_addr is still -1 (an identity write
+ *  would fault); in the second half memstart_addr is valid while the linear
+ *  map fb2 relies on does not exist yet (a phys_to_virt() write would
+ *  fault).  Both halves are now also closed by the markers, so the window is
+ *  belt and braces rather than the only defence; S1 is still placed before
+ *  cpu_uninstall_idmap(), S2 right after paging_init(), S3 at the end of
+ *  setup_arch(), and check-c2s-paint-paths.py pins that arrangement.
  */
 
 #include <linux/c2s_diag.h>
@@ -108,14 +158,26 @@
 #define C2S_MAP_CHUNK		SZ_256K
 
 /*
+ * Index into c2s_fb_phys[] of the splash buffer that is reserved *without*
+ * no-map, i.e. the one that has a linear alias.  fb0 and fb1 are no-map
+ * reservations, so phys_to_virt() is meaningless for them.
+ */
+#define C2S_FB_LINEAR		2U
+
+/*
  * Scanout discriminator band (issue #5 change B).  The five asm markers and
  * the C ladder all paint the *same* colour into all three splash buffers, so
  * a photo can never tell which buffer the DECON actually scans out.  Painting
  * a different colour per buffer at one row makes the answer obvious: red
  * means fb0, green means fb1, blue means fb2.  That is what turns "C2 is
  * missing" from an uninterpretable result into a real signal.
+ *
+ * Row 1024 (rows 1024..1151) is the first free row after C3's 896..1023.
+ * It moved here from 1664 for diag9: 1664 sits inside the row band the
+ * owner's photo shows as the Samsung logo, which makes the probe result
+ * unreadable - see the layout rule in the header comment.
  */
-#define C2S_SCANOUT_ROW		1664U		/* rows 1664..1791 */
+#define C2S_SCANOUT_ROW		1024U		/* rows 1024..1151 */
 #define C2S_SCANOUT_COLOUR_FB0	0xffff0000U	/* red    */
 #define C2S_SCANOUT_COLOUR_FB1	0xff00ff00U	/* green  */
 #define C2S_SCANOUT_COLOUR_FB2	0xff0000ffU	/* blue   */
@@ -133,13 +195,70 @@ static const unsigned long c2s_fb_phys[] = {
 };
 
 /*
- * memstart_addr keeps its -1 sentinel until arm64_memblock_init() runs
- * inside setup_arch(); while it does, TTBR0 still holds the initial ID map,
- * so the physical addresses are usable directly as virtual addresses.
+ * Phase flags, written by the two markers in setup_arch() and read only by
+ * the __init entry points.  No global in the arm64 core answers the two
+ * questions a paint has to ask, which is why both are published explicitly:
+ *
+ *  - c2s_idmap_removed:  cpu_uninstall_idmap() has run.  memstart_addr
+ *    still holds -1 here (arm64_memblock_init() is a dozen lines further
+ *    down), so the sentinel alone would report "ID map alive" while TTBR0
+ *    already points at reserved_pg_dir and an identity write would fault.
+ *
+ *  - c2s_linear_ready:  paging_init() has run, so map_mem() has walked
+ *    memblock.memory into swapper_pg_dir.  memstart_addr is valid from
+ *    arm64_memblock_init() onwards, i.e. *before* that happens, so the
+ *    sentinel alone would report "linear map available" while fb2's
+ *    phys_to_virt() alias is still unmapped and would fault too.
+ *
+ * Both live in plain .data: they are set from __init code but read from
+ * __init code only, and keeping them out of .init.data means no lifetime
+ * question about the setter ever arises.  See
+ * c2s-rescue/scripts/check-c2s-paint-paths.py, which pins the marker
+ * placement relative to cpu_uninstall_idmap()/paging_init().
+ */
+static bool c2s_idmap_removed;
+static bool c2s_linear_ready_flag;
+
+void __init c2s_mark_idmap_gone(void)
+{
+	c2s_idmap_removed = true;
+}
+
+void __init c2s_mark_linear_ready(void)
+{
+	c2s_linear_ready_flag = true;
+}
+
+/*
+ * True while TTBR0 still holds the boot ID map that create_init_idmap()
+ * built, i.e. while the physical addresses are usable directly as virtual
+ * addresses.  memstart_addr keeps its documented -1 sentinel
+ * (arch/arm64/mm/init.c) until arm64_memblock_init() runs inside
+ * setup_arch(), but that is *not* sufficient on its own: arm64_memblock
+ * init follows cpu_uninstall_idmap() by a dozen lines, so the window
+ * between the two has memstart_addr == -1 with no ID map to write through.
+ * The marker closes that window.
  */
 static bool c2s_idmap_alive(void)
 {
-	return memstart_addr < 0;
+	return !c2s_idmap_removed && memstart_addr < 0;
+}
+
+/*
+ * True once the linear map covers fb2, i.e. once paging_init() has run
+ * (map_mem() maps memblock.memory, and fb2 is in memblock.memory because
+ * the DT reserves it *without* no-map).
+ *
+ * Callers only ever ask this when the boot ID map is gone.  The flag - not
+ * !c2s_idmap_alive() - is the test, because memstart_addr is valid from
+ * arm64_memblock_init() (setup.c:332) up to paging_init() (setup.c:334):
+ * in those two lines there is neither an ID map nor a linear map, and the
+ * sentinel cannot tell that apart.  The forbidden window is kept free of
+ * call sites and source-gated on setup.c.
+ */
+static bool c2s_linear_alive(void)
+{
+	return c2s_linear_ready_flag;
 }
 
 /*
@@ -196,14 +315,58 @@ static void c2s_decon_kick(void __iomem *decon)
  * buffer), so the colour is an argument.  Marked __init because it reaches
  * early_memremap(), which lives in .init.text.
  *
- * Returns false if a mapping was refused, so the caller can abandon the
- * whole band rather than leave a half-painted one on the panel.
+ * fb selection, and why fb2 is never skipped here:
+ *
+ *   idmap            every buffer, fb2 included, is written through its
+ *                    identity alias - the ID map maps all three, and this
+ *                    is the phase C1/probe/S1 run in.  fb2 is not special
+ *                    here: the same physical memory, a different virtual
+ *                    address.
+ *   fb2 && !idmap    fb2 has no fixmap/no-map alias, so it is written
+ *                    through phys_to_virt() instead: a cacheable linear
+ *                    alias that shares no code with early_memremap().
+ *   fb0/fb1 && !idmap  early_memremap().
+ *
+ * The fb2 linear branch is gated on BOTH !idmap and c2s_linear_alive().
+ *  - !idmap alone would be wrong inside setup_arch() before
+ *    paging_init(), where the ID map is already gone but the linear map
+ *    does not exist yet; phys_to_virt() would return an unmapped address
+ *    and fault.
+ *  - c2s_linear_alive() alone would be wrong if a call site ever appeared
+ *    while the ID map was still in TTBR0, because phys_to_virt() of a
+ *    no-map-adjacent physical address is not reachable until map_mem().
+ * Requiring both means the linear address is used exactly when paging_init()
+ * has run (and therefore after cpu_uninstall_idmap()), which is the window
+ * the source gate on arch/arm64/kernel/setup.c pins: no band call may sit
+ * between cpu_uninstall_idmap() and paging_init().
+ *
+ * Returns false if the buffer could not be painted (mapping refused).  The
+ * caller must NOT stop the other buffers because of that: the point of the
+ * per-buffer independence is that a failure in fb0/fb1 (early_memremap) must
+ * not prevent fb2 (linear alias) from being painted - otherwise a single
+ * early_memremap() failure would silence the very buffer the diagnostic
+ * needs to observe.
  */
 static bool __init c2s_paint_early_fb(unsigned int fb,
 				      unsigned long band_off,
 				      u32 colour, bool idmap)
 {
 	unsigned long pos = 0;
+
+	if (fb == C2S_FB_LINEAR && !idmap && c2s_linear_alive()) {
+		/*
+		 * fb2 is reserved without no-map, so it is part of the
+		 * linear map once paging_init() has run.  The alias is
+		 * cacheable (PAGE_KERNEL), so the band needs the same
+		 * dcache_clean_inval_poc() the other paths do.
+		 */
+		unsigned char *lin = phys_to_virt(c2s_fb_phys[fb] + band_off);
+
+		c2s_fill_band(lin, C2S_BAND_BYTES, colour);
+		dcache_clean_inval_poc((unsigned long)lin,
+				       (unsigned long)lin + C2S_BAND_BYTES);
+		return true;
+	}
 
 	while (pos < C2S_BAND_BYTES) {
 		unsigned long phys = c2s_fb_phys[fb] + band_off + pos;
@@ -252,23 +415,56 @@ static void __init c2s_kick_early(bool idmap)
 }
 
 /*
+ * Paint one band into every splash buffer and refresh the panel once.
+ *
+ * Every buffer is attempted independently and unconditionally: fb2 is not
+ * gated on "the linear alias being ready", because in the ID-map phase that
+ * test is false by definition and fb2 would then never be painted - which is
+ * exactly the bug that made the scanout probe report only fb0/fb1 and made
+ * fb2's early milestones invisible.  c2s_paint_early_fb() picks the right
+ * alias per phase itself (identity while idmap, linear after paging_init()),
+ * so all three buffers are always attempted.
+ *
+ * A failure in one buffer does not stop the others, and a DECON kick is
+ * issued whenever at least one buffer was painted.  This is deliberate - see
+ * the header comment: the fb2 linear-alias path must be exercised even when
+ * the fb0/fb1 early_memremap() path fails, otherwise "no band" would be
+ * ambiguous between "kernel died" and "mapping helper failed".
+ */
+static void __init c2s_paint_band_early(unsigned long band_off,
+					const u32 *colours)
+{
+	bool idmap = c2s_idmap_alive();
+	bool painted = false;
+	unsigned int fb;
+
+	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_phys); fb++) {
+		if (c2s_paint_early_fb(fb, band_off, colours[fb], idmap))
+			painted = true;
+		else
+			pr_err("c2s: band paint failed for fb%u (row %lu)\n",
+			       fb, band_off / C2S_FB_STRIDE);
+	}
+
+	if (painted)
+		c2s_kick_early(idmap);
+}
+
+/*
  * Early path - __init only, see the header comment.  Handles the ID-map
  * phase and the early_*remap phase; both give cacheable memory.
  */
 void __init c2s_band_early(u32 row, u32 colour)
 {
 	unsigned long band_off = (unsigned long)row * C2S_FB_STRIDE;
-	bool idmap = c2s_idmap_alive();
-	unsigned int fb;
+	u32 colours[ARRAY_SIZE(c2s_fb_phys)];
 
 	if (band_off + C2S_BAND_BYTES > C2S_FB_SIZE)
 		return;
 
-	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_phys); fb++)
-		if (!c2s_paint_early_fb(fb, band_off, colour, idmap))
-			return;
+	colours[0] = colours[1] = colours[2] = colour;
 
-	c2s_kick_early(idmap);
+	c2s_paint_band_early(band_off, colours);
 }
 
 /*
@@ -289,36 +485,45 @@ void __init c2s_band_early(u32 row, u32 colour)
 void __init c2s_scanout_probe(u32 row, u32 c_fb0, u32 c_fb1, u32 c_fb2)
 {
 	unsigned long band_off = (unsigned long)row * C2S_FB_STRIDE;
-	bool idmap = c2s_idmap_alive();
-	const u32 colours[3] = { c_fb0, c_fb1, c_fb2 };
-	unsigned int fb;
+	u32 colours[ARRAY_SIZE(c2s_fb_phys)];
 
 	if (band_off + C2S_BAND_BYTES > C2S_FB_SIZE)
 		return;
 
-	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_phys); fb++)
-		if (!c2s_paint_early_fb(fb, band_off, colours[fb], idmap))
-			return;
+	colours[0] = c_fb0;
+	colours[1] = c_fb1;
+	colours[2] = c_fb2;
 
-	c2s_kick_early(idmap);
+	c2s_paint_band_early(band_off, colours);
 }
 
 /*
  * Long-lived mappings, taken by c2s_late_init() from process context after
- * mm_core_init().  All three splash buffers are mapped: fb0 and fb1 live in
- * no-map reservations, fb2 does too since the DT reserved it with no-map
- * (before that it was unreserved RAM, and ioremap_wc() refuses to map RAM -
- * pfn_is_map_memory() is true there - so only the ID-map phase could paint
- * it, which made every band from C2 on invisible if the DECON scanned fb2).
+ * mm_core_init().  The two groups are not the same kind of thing:
  *
- * ioremap_wc() (PROT_NORMAL_NC) is deliberate: simplefb maps the very same
- * physical range with ioremap_wc() (drivers/video/fbdev/simplefb.c:602), so
- * our alias carries the same memory type as the one fbcon writes through.
- * A cacheable alias of the same range would be a mismatched-attribute
- * alias of an NC range; the plain stores through the NC alias reach
- * memory directly, and mb() orders them against the DECON MMIO.
+ *  - fb0 and fb1 are no-map reservations, so pfn_is_map_memory() is false
+ *    for them and ioremap_wc() is both legal and required - required
+ *    because a cacheable alias of an NC range (the simplefb window fbcon
+ *    writes through, drivers/video/fbdev/simplefb.c:602) would be a
+ *    mismatched-attribute alias.  Plain stores through the NC alias reach
+ *    memory directly, and mb() orders them against the DECON MMIO.
+ *
+ *  - fb2 is reserved WITHOUT no-map (diag9), so it is ordinary RAM as far
+ *    as ioremap() is concerned: __ioremap_prot() WARNs on pfn_is_map_memory()
+ *    and returns NULL.  It is instead reached through its linear alias
+ *    phys_to_virt(c2s_fb_phys[2]), which exists because paging_init() has
+ *    run by now - the marker was posted in setup_arch() and is checked
+ *    before the alias is taken.  That alias is cacheable, so a band written
+ *    through it must be pushed to DRAM with dcache_clean_inval_poc() in
+ *    c2s_band(); the fb0/fb1 path needs no cache op.
+ *
+ * Keeping them in one array is deliberate: c2s_band() writes whichever is
+ * present and the per-entry c2s_fb_cacheable[] flag selects the cache
+ * maintenance, so a failure to map one buffer cannot hide the others.
  */
 static void __iomem *c2s_fb_map[ARRAY_SIZE(c2s_fb_phys)];
+static void *c2s_fb_linear[ARRAY_SIZE(c2s_fb_phys)];
+static bool c2s_fb_cacheable[ARRAY_SIZE(c2s_fb_phys)];
 static void __iomem *c2s_decon_map;
 
 /*
@@ -343,11 +548,30 @@ void __init c2s_late_init(void)
 {
 	unsigned int fb;
 
-	if (c2s_fb_map[0])
+	if (c2s_fb_map[0] || c2s_fb_linear[C2S_FB_LINEAR])
 		return;
 
-	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++)
+	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++) {
+		if (fb == C2S_FB_LINEAR)
+			continue;
+
 		c2s_fb_map[fb] = ioremap_wc(c2s_fb_phys[fb], C2S_FB_SIZE);
+		if (c2s_fb_map[fb])
+			c2s_fb_cacheable[fb] = false;
+	}
+
+	/*
+	 * fb2 is RAM (reserved without no-map), so ioremap_wc() would refuse
+	 * it; the linear alias is the mapping that covers it.  Without
+	 * paging_init() there is no such alias, so the late path simply does
+	 * not paint fb2 - it must never touch the linear address before
+	 * then.
+	 */
+	if (c2s_linear_alive()) {
+		c2s_fb_linear[C2S_FB_LINEAR] =
+			phys_to_virt(c2s_fb_phys[C2S_FB_LINEAR]);
+		c2s_fb_cacheable[C2S_FB_LINEAR] = true;
+	}
 
 	c2s_decon_map = ioremap(C2S_DECON_PHYS, PAGE_SIZE);
 	INIT_WORK(&c2s_kick_work, c2s_kick_work_fn);
@@ -356,14 +580,14 @@ void __init c2s_late_init(void)
 	 * A failed mapping would make every late milestone invisible in that
 	 * buffer, which on the panel is indistinguishable from "the USB path
 	 * never got that far".  Say so in the log instead of leaving a silent
-	 * hole in the ladder.  All three buffers are mapped: fb2 became
-	 * legal to ioremap_wc() once the DT reserved it with no-map (before
-	 * that it was RAM and __ioremap_prot() refuses RAM).
+	 * hole in the ladder.  fb0/fb1 come from ioremap_wc(), fb2 from the
+	 * linear map - they are two different mappings for two different
+	 * kinds of reservation.
 	 */
-	if (!c2s_fb_map[0] || !c2s_fb_map[1] || !c2s_fb_map[2] ||
-	    !c2s_decon_map)
+	if (!c2s_fb_map[0] || !c2s_fb_map[1] ||
+	    !c2s_fb_linear[C2S_FB_LINEAR] || !c2s_decon_map)
 		pr_err("c2s: milestone mappings incomplete: fb0=%p fb1=%p fb2=%p decon=%p\n",
-		       c2s_fb_map[0], c2s_fb_map[1], c2s_fb_map[2],
+		       c2s_fb_map[0], c2s_fb_map[1], c2s_fb_linear[C2S_FB_LINEAR],
 		       c2s_decon_map);
 }
 
@@ -382,11 +606,26 @@ void c2s_band(u32 row, u32 colour)
 	for (fb = 0; fb < ARRAY_SIZE(c2s_fb_map); fb++) {
 		void *p;
 
-		if (!c2s_fb_map[fb])
+		if (c2s_fb_map[fb])
+			p = (void *)((u8 __force *)c2s_fb_map[fb] + band_off);
+		else if (c2s_fb_linear[fb])
+			p = (u8 *)c2s_fb_linear[fb] + band_off;
+		else
 			continue;
 
-		p = (void *)((u8 __force *)c2s_fb_map[fb] + band_off);
 		c2s_fill_band(p, C2S_BAND_BYTES, colour);
+
+		if (c2s_fb_cacheable[fb]) {
+			/*
+			 * The linear alias is cacheable, so the stores are
+			 * still in the CPU cache: they have to be pushed to
+			 * DRAM before the DECON reads them.  The fb0/fb1
+			 * aliases are NC, so their stores are already in
+			 * memory.
+			 */
+			dcache_clean_inval_poc((unsigned long)p,
+					       (unsigned long)p + C2S_BAND_BYTES);
+		}
 	}
 
 	/*

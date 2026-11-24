@@ -20,7 +20,6 @@
 #include <linux/if_vlan.h>
 #include <linux/string_helpers.h>
 #include <linux/usb/composite.h>
-#include <linux/c2s_diag.h>
 
 #include "u_ether.h"
 
@@ -1186,8 +1185,6 @@ struct net_device *gether_connect(struct gether *link)
 		spin_unlock(&dev->lock);
 
 		netif_carrier_on(dev->net);
-		/* Issue #5: netdev carrier is up, rows 1536..1663. */
-		c2s_band(1536, 0xff00ff7f);
 		if (netif_running(dev->net))
 			eth_start(dev, GFP_ATOMIC);
 

@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * NEGATIVE CONTROL FIXTURE for c2s-rescue/scripts/check-c2s-paint-paths.py.
+ *
+ * A minimal reproduction of the setup_arch() statement order in
+ * arch/arm64/kernel/setup.c, with the defect this candidate has to catch
+ * put in: milestone S2 painted between cpu_uninstall_idmap() and
+ * paging_init().  In that window TTBR0 already points at reserved_pg_dir
+ * (no identity mapping) while map_mem() has not run yet (no linear
+ * mapping), so c2s_band_early() would fault instead of painting - and on
+ * a device a fault there is indistinguishable from "the kernel died in
+ * setup_arch()".
+ *
+ * Every statement the gate looks for is present exactly once; only the
+ * placement of c2s_band_early(2624, ...) is wrong.  The gate must REJECT
+ * this file.
+ */
+void setup_arch_marker_order(void)
+{
+	setup_machine_fdt(__fdt_pointer);
+	c2s_band_early(2496, 0xff008080);
+
+	cpu_uninstall_idmap();
+	c2s_mark_idmap_gone();
+
+	arm64_memblock_init();
+
+	c2s_band_early(2624, 0xff800080);
+
+	paging_init();
+	c2s_mark_linear_ready();
+
+	c2s_band_early(2752, 0xffc0c0c0);
+}

@@ -79,18 +79,32 @@
 
 		/*
 		 * Second splash-scanout candidate (see c2s_diag_bands.c).
-		 * fb0 and fb1 already live in no-map reservations, so the
-		 * C-level ladder could paint them after mm_core_init() while
-		 * fb2 stayed ID-map-only: if DECON scans fb2 then every band
-		 * from C2 on was invisible regardless of how far the kernel
-		 * got, which is the ambiguity the diag7 photo showed (C1
-		 * present, C2 absent).  no-map takes 17 MiB of 12 GiB out of
-		 * memblock - memblock never owns it, so painting it at any
-		 * point after setup_arch() is allocator-safe.
+		 * fb0 and fb1 live in no-map reservations, so the C-level
+		 * ladder could paint them after mm_core_init() while fb2
+		 * stayed ID-map-only: if DECON scans fb2 then every band from
+		 * C2 on was invisible regardless of how far the kernel got,
+		 * which is the ambiguity the diag7 photo showed (C1 present,
+		 * C2 absent).
+		 *
+		 * fb2 is deliberately reserved WITHOUT no-map (issue #5,
+		 * diag9): memblock_reserve() keeps the page allocator off it
+		 * - the range never reaches memblock_free_all(), so painting
+		 * it after allocation is still safe - but because it is not
+		 * nomap it stays in memblock.memory and map_mem() therefore
+		 * covers it in the linear map.  From paging_init() on,
+		 * phys_to_virt(0xfac00000) is a *cacheable* paint address
+		 * needing no fixmap slot and no ioremap, i.e. a path that
+		 * shares nothing with early_memremap()/ioremap_wc().  That
+		 * is what makes "band absent" in the fb2 scanout case
+		 * informative instead of self-referential.
+		 *
+		 * The flip side is enforced by verify.sh on the built DTB:
+		 * fb0/fb1 must keep no-map (so they stay out of the linear
+		 * map and ioremap_wc() stays legal for them) and fb2 must
+		 * not carry no-map (or phys_to_virt() would fault).
 		 */
 		fb2_splash_mem: framebuffer@fac00000 {
 			reg = <0x0 0xfac00000 0x10f6800>;
-			no-map;
 		};
 
 		abox_reserved: audio@f7fb0000 {

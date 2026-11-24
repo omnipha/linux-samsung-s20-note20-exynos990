@@ -30,9 +30,23 @@
  * buffer, so a single photo of the panel names the buffer the DECON scans
  * out: red = fb0, green = fb1, blue = fb2.  It runs in the boot ID-map
  * phase, where all three buffers are identity-mapped.
+ *
+ * The two markers below publish mapping-lifetime transitions inside
+ * setup_arch().  They exist because no usable global distinguishes them:
+ * memstart_addr still holds its -1 sentinel after cpu_uninstall_idmap(),
+ * so it cannot say "the ID map is gone", and it becomes valid one call
+ * before paging_init(), so it cannot say "the linear map exists".  Reading
+ * a physical framebuffer through the wrong alias faults, so each phase
+ * announces itself explicitly and c2s_band_early() refuses to take the
+ * phys_to_virt() branch until the second marker has run.
+ *
+ *   c2s_mark_idmap_gone()    call immediately after cpu_uninstall_idmap().
+ *   c2s_mark_linear_ready()  call immediately after paging_init().
  */
 void __init c2s_band_early(u32 row, u32 colour);
 void __init c2s_scanout_probe(u32 row, u32 c_fb0, u32 c_fb1, u32 c_fb2);
+void __init c2s_mark_idmap_gone(void);
+void __init c2s_mark_linear_ready(void);
 void __init c2s_late_init(void);
 void c2s_band(u32 row, u32 colour);
 
@@ -41,6 +55,8 @@ void c2s_band(u32 row, u32 colour);
 static inline void c2s_band_early(u32 row, u32 colour) { }
 static inline void c2s_scanout_probe(u32 row, u32 c_fb0, u32 c_fb1,
 				     u32 c_fb2) { }
+static inline void c2s_mark_idmap_gone(void) { }
+static inline void c2s_mark_linear_ready(void) { }
 static inline void c2s_late_init(void) { }
 static inline void c2s_band(u32 row, u32 colour) { }
 

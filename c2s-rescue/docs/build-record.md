@@ -1128,3 +1128,127 @@ index **13**, Samsung DT table `d7b7ab1e`, FDT 142 056 B == kbuild DTB.
   one-variable candidate (no `usb3-phy` exists on this port, and TWRP
   enumerates HS on the same port and cable), not a proven fix.
 
+
+## Build 9 (turn 2026-11-24): logo-zone layout, fb2 linear alias, setup_arch bands
+
+### Build commands (build host)
+
+```
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag9-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag9-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag9-out
+```
+
+The paired baseline (the same tree, `CONFIG_C2S_DIAG` off) was built the
+same way into `/tmp/opencode/c2s-diag9-base-out` and verified as well.
+
+`build.sh` exit 0; `package-bootimg.sh` exit 0; `verify.sh` exit 0 for both
+(**229 passed, 0 failed** each; build 8 had 223).
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag9, signed) | `/tmp/opencode/c2s-diag9-out/boot.img` | 61 865 984 | `d307a3398fd02e4e9788f5e84e4b5c010bcf87f556d5bbd67593ba95c2b9439e` |
+| Image (diag9) | `/tmp/opencode/c2s-diag9-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `254119d2b6db10f76cbdab046bfc861ac1f9acb201f4df4d34a52cd2f897b1c0` |
+| DTB | `/tmp/opencode/c2s-diag9-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 142 044 | `68e5f8ca89d33230eff26cce7b97e6496574c5894c74dd07249d54f2e5be242b` |
+| initramfs | `/tmp/opencode/c2s-diag9-out/work/initramfs.cpio.gz` | 3 367 458 | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag9-base-out/boot.img` | 61 865 984 | `601918e341e1e92f2fb0e1de1f916107af26a347afb1e85f179a80a52b23a5e5` |
+| Image (baseline) | `/tmp/opencode/c2s-diag9-base-out/kbuild/arch/arm64/boot/Image` | 12 677 632 | `226efb60a6e377930427464b1a2b2a16e20e9bc9f35e06672c22551e0e32673a` |
+
+The initramfs is byte-identical to builds 7 and 8 (no initramfs change).
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e`
+ok, FDT 142 044 B == kbuild DTB.
+
+### What changed in the kernel
+
+* `arch/arm64/boot/dts/exynos/exynos990-c2s.dts` - fb2 stays reserved
+  **without** `no-map` (diag8 already removed the property; this build
+  keeps it and adds the fb2/fb0/fb1 gate in both directions).
+* `arch/arm64/kernel/c2s_diag_bands.c` - the painter:
+  * two new phase markers (`c2s_mark_idmap_gone()`,
+    `c2s_mark_linear_ready()`) replace the `memstart_addr` sentinel as
+    the phase discriminator, because the sentinel cannot express the
+    window between `cpu_uninstall_idmap()` and `paging_init()`;
+  * the fb2 branch of `c2s_paint_early_fb()` is gated on
+    `!idmap && c2s_linear_alive()` and writes through `phys_to_virt()`
+    (cacheable, so the fill is followed by `dcache_clean_inval_poc()`);
+  * `c2s_paint_band_early()` attempts all three buffers independently,
+    logs a `pr_err` per failure and kicks the DECON iff at least one
+    buffer was painted;
+  * `c2s_late_init()` takes fb0/fb1 with `ioremap_wc()` and fb2 with the
+    linear alias; `c2s_band()` cleans the cache for the cacheable alias
+    only.
+* `arch/arm64/kernel/setup.c` - the three new setup_arch() milestones and
+  the two markers:
+  * S1 `c2s_band_early(2496, 0xff008080)` right after
+    `setup_machine_fdt()` (still the ID map);
+  * `c2s_mark_idmap_gone()` right after `cpu_uninstall_idmap()`;
+  * `c2s_mark_linear_ready()` + S2 `c2s_band_early(2624, 0xff800080)`
+    right after `paging_init()`;
+  * S3 `c2s_band_early(2752, 0xffc0c0c0)` as the last statement of
+    `setup_arch()`.
+* `init/main.c` - the scanout discriminator moved from row 1664 to row
+  1024 (1664 is inside the logo band and could not be read back); the
+  two `c2s_band(1152, ...)` call sites in `run_init_process()` removed.
+* `drivers/usb/gadget/udc/core.c` and
+  `drivers/usb/gadget/function/u_ether.c` - the five USB milestone call
+  sites (1024, 1280, 1408, 1536) and the stale `#include
+  <linux/c2s_diag.h>` removed.
+* `include/linux/c2s_diag.h` - the two marker declarations plus their
+  stubs for the `!CONFIG_C2S_DIAG` build.
+* `arch/arm64/Kconfig` - the `C2S_DIAG` help text updated for the new
+  paint paths.
+
+### Host evidence
+
+* `check-c-milestone-bands.py` on the diag9 vmlinux: **PASS (14 milestone
+  call site(s) verified)** - five in `start_kernel()` (C1, the
+  discriminator, C2, C3, `c2s_late_init()`), five in `setup_arch()` (S1,
+  the two markers, S2, S3) and four *empty* expectations that assert the
+  USB functions carry no call site at all.
+* The disassembly confirms the intended order in `setup_arch()`:
+  `c2s_band_early(2496)` < `c2s_mark_idmap_gone()` <
+  `arm64_memblock_init()` < `paging_init()` < `c2s_mark_linear_ready()` <
+  `c2s_band_early(2624)` < `c2s_band_early(2752)`.
+* `check-c2s-paint-paths.py`: **PASS (21 paint-path properties
+  verified)**. Its negative control (the painter with fb2 skipped and the
+  loop aborting on the first failure) is rejected with three separate
+  assertions.
+* **Negative controls, all rejected**:
+  `gether_connect.wrong-row.txt` (the leftover USB call site, which the
+  empty expectation must reject), `start_kernel.scanout-wrong-row.txt`
+  (discriminator row 1024 -> 1025), `start_kernel.scanout-wrong-colour.txt`
+  (fb2 colour `0xff0000ff` -> `0xff0000fe`), the new
+  `setup_arch.s3-wrong-row.txt` (S3 row 2752 -> 2753), and the two paint
+  path controls - `c2s_diag_bands.skip-fb2-and-abort.txt` (fb2 skipped,
+  loop aborts on first failure, kick dropped) and
+  `setup_arch.band-in-forbidden-window.txt` (S2 painted between
+  `cpu_uninstall_idmap()` and `paging_init()`).
+* **DTB gates, now in both directions**: fb2 must carry **no** `no-map`
+  (with it, `phys_to_virt()` would fault) and fb0/fb1 must be covered by
+  `no-map` reservations of the full `0x10f6800` bytes (fb1 is matched by
+  *containment*, because it lies wholly inside the vendor audio
+  reservation and has no node of its own).
+* The baseline build has zero `c2s_*` symbols and zero milestone call
+  sites; its `verify.sh` run is 229/0 as well.
+
+### What is still NOT proven
+
+* Everything about the panel remains host-unverified: whether the DECON
+  scans fb0, fb1 or fb2, whether `setup_arch()` completes, and where - if
+  anywhere - the C ladder is actually visible. The logo band is a
+  **hypothesis**; a missing band never proves the kernel stopped.
+* C2 and C3 were absent from the diag8 photo although they sat in the
+  visible gap. This build repaints them through a different path (fb2 via
+  the linear alias instead of `ioremap_wc()`), so the next photo can tell
+  a paint failure from a scanout problem.
+* The USB failure root cause is unchanged: `maximum-speed = "high-speed"`
+  is still a one-variable candidate, and the USB milestone bands are gone
+  until diag10.

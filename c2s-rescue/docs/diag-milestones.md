@@ -1084,3 +1084,170 @@ property. AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table
 * fb1's ownership is inherited from the vendor audio reservation (see the
   table above); no dedicated fb1 reservation was added.
 
+
+## Candidate 8 (turn 2026-11-24): logo-zone layout, fb2 linear alias, setup_arch bands
+
+The diag8 photo (owner, 2026-11-24 10:16) showed the five asm bands and
+yellow C1 - and nothing else, even though C2/C3 sit in rows that the photo
+shows as plain black. That is three findings at once, and they are kept
+apart deliberately because only one of them is measured:
+
+* **Measured**: rows ~1300..2270 of 3088 show the Samsung logo on this
+  panel. Every band that landed there in candidate 7 (C4 1024 is fine, but
+  C5 1152, C6 1280/1408, C7 1536 and the discriminator 1664 all straddle or
+  sit inside it) was unobservable by construction.
+* **Hypothesis, not proven**: the logo layer is opaque and hides anything
+  painted underneath it. It is a *hypothesis* - a band missing from a photo
+  never proves the kernel stopped there, and this candidate's readout
+  contract says so explicitly (below).
+* **Measured**: C2 (768) and C3 (896) were inside the visible gap and still
+  absent. Those rows are not explained by the logo, so they remain open.
+
+### The layout rule
+
+Bands may only be placed in rows **0..1269** or **2271..3087**. Rows
+1270..2270 are untrusted for readout (logo zone, hypothesis). Rows
+2880..3007 are free.
+
+### The new ladder
+
+| milestone | rows | colour (AARRGGBB) | where | phase / mapping |
+|---|---|---|---|---|
+| asm M1..M4 | 0..639 | unchanged | `head.S` | MMU off / ID map |
+| C1 `start_kernel()` entry | 640..767 | yellow `0xffffff00` | first statement of `start_kernel()` | ID map |
+| **D1 scanout discriminator** | **1024..1151** | **red / green / blue per buffer** | **right after C1, own DECON kick** | **ID map** |
+| C2 `setup_arch()` done | 768..895 | cyan `0xff00ffff` | after `setup_arch()` returns | `early_memremap()`, fb2 via `phys_to_virt()` |
+| C3 `console_init()` done | 896..1023 | orange `0xffffa500` | after `console_init()` | `early_memremap()`, fb2 via `phys_to_virt()` |
+| **S1 FDT parsed** | **2496..2623** | **`0xff008080`** | **right after `setup_machine_fdt()`, before `cpu_uninstall_idmap()`** | **ID map** |
+| **S2 linear map up** | **2624..2751** | **`0xff800080`** | **right after `paging_init()`** | `early_memremap()`, fb2 via `phys_to_virt()` |
+| **S3 `setup_arch()` end** | **2752..2879** | **`0xffc0c0c0`** | **last statement of `setup_arch()`** | `early_memremap()`, fb2 via `phys_to_virt()` |
+
+S1/S2/S3 are new and S1..S3 mark the parts of `setup_arch()` that C2
+cannot separate: `setup_machine_fdt()` (ID map), `paging_init()` (linear
+map), and the function returning. All three sit in rows 2496..2879, in the
+visible zone below the logo.
+
+### Rows removed in this candidate (and why)
+
+* 1024 (C4 UDC registered), 1152 (C5 `/init`), 1280/1408 (C6 gadget
+  bound/failed), 1536 (C7 netdev carrier): **all five call sites removed**
+  from `drivers/usb/gadget/udc/core.c`,
+  `drivers/usb/gadget/function/u_ether.c` and `init/main.c`. 1408 and 1536
+  are fully inside the logo zone, 1280 straddles it, and 1024/1152 are the
+  two rows that were free but are deferred to diag10 together with their
+  milestone so that one candidate does not move half the ladder and keep the
+  other half. The `c2s_band()` late path, `c2s_late_init()` and their gates
+  stay in the tree; only the *call sites* are gone, and
+  `check-c-milestone-bands.py` now requires an **empty** expectation list
+  for those four functions, which is a positive "must carry no call site"
+  assertion rather than "not checked".
+* 1664 (D1): moved to 1024 for the logo reason above.
+
+### Change: fb2 is now painted through the linear map
+
+fb2 stays reserved **without** `no-map` (candidate 7 removed the `no-map`
+line), and diag9 builds the paint path that this makes possible:
+
+* In the **ID-map** phase (C1, D1, S1) all three buffers are written
+  through their identity aliases, fb2 included - never skipped.
+* From **`paging_init()` on** (C2, C3, S2, S3, and `c2s_late_init()`),
+  fb2 has no fixmap alias and `ioremap_wc()` refuses it
+  (`__ioremap_prot()` warns on `pfn_is_map_memory()`), so it is written
+  through `phys_to_virt()`: a *cacheable* alias built by `map_mem()` out of
+  `memblock.memory`, which fb2 is in because it is not `nomap`. Every fill
+  through it is followed by `dcache_clean_inval_poc()` so the band reaches
+  DRAM before the DECON kick.
+* fb0/fb1 stay on `early_memremap()` / `ioremap_wc()` - they are `no-map`
+  reservations and are *absent* from the linear map, so `phys_to_virt()`
+  would fault for them. The verify.sh gate now checks this in both
+  directions: fb2 must carry **no** `no-map`, fb0/fb1 must carry it.
+
+The purpose is diagnostic independence: fb2's band now shares no mapping
+helper code with fb0/fb1, so a photo can separate "the kernel died here"
+from "the fixmap/ioremap helper failed here" when the DECON turns out to
+scan fb2.
+
+### The forbidden window, and the two markers
+
+`setup_arch()` contains a dozen lines in which **neither** mapping exists
+for the splash buffers:
+
+1. between `cpu_uninstall_idmap()` and `arm64_memblock_init()`:
+   `memstart_addr` still reads `-1` (so a sentinel check says "ID map is
+   alive") while TTBR0 already points at `reserved_pg_dir` - an identity
+   write faults;
+2. between `arm64_memblock_init()` and `paging_init()`: `memstart_addr` is
+   valid (so `!idmap` says "use `phys_to_virt()`") but `map_mem()` has not
+   run - the linear write faults.
+
+No global distinguishes the two cases, so the kernel now announces them:
+
+* `c2s_mark_idmap_gone()` immediately after `cpu_uninstall_idmap()`;
+* `c2s_mark_linear_ready()` immediately after `paging_init()`.
+
+`c2s_idmap_alive()` requires *both* the marker and the sentinel;
+`c2s_linear_alive()` is the `paging_init()` marker alone. The fb2 branch in
+`c2s_paint_early_fb()` additionally requires `!idmap`, so the linear
+address is used in exactly one situation: after `paging_init()`, which is
+after `cpu_uninstall_idmap()`.
+
+### Per-buffer independence and kick-if-any
+
+`c2s_paint_band_early()` attempts all three buffers unconditionally, logs a
+`pr_err` naming the buffer and row for each failure, and issues the DECON
+kick **iff at least one** buffer was painted. This is the property the
+coordinator asked for: fb0/fb1 failing `early_memremap()` must not stop fb2
+from being painted (nor vice versa), and a band must be kicked whenever any
+of the three reached DRAM - otherwise "no band" is indistinguishable from
+"the mapping helper refused".
+
+### New gate: `check-c2s-paint-paths.py`
+
+The call-site gate can only see *which* row is painted; it cannot see
+through which alias, nor where in `setup_arch()` a call sits. The new gate
+reads `arch/arm64/kernel/c2s_diag_bands.c` and
+`arch/arm64/kernel/setup.c` and pins 21 properties, among them:
+
+* no `return`/`break` in the per-buffer loop, no `continue` past
+  `C2S_FB_LINEAR`, `pr_err` on failure, kick guarded by `painted`;
+* the fb2 branch gated on `!idmap && c2s_linear_alive()`, and the identity
+  branch still present;
+* both markers defined, and placed in the right order in `setup.c`
+  (S1 < `cpu_uninstall_idmap()` < marker < `arm64_memblock_init()`;
+  `paging_init()` < marker < S2 < S3);
+* no band call of any kind inside the `cpu_uninstall_idmap()` ..
+  `paging_init()` window;
+* late path: fb0/fb1 on `ioremap_wc()`, the fb2 entry of that loop
+  `continue`d away, fb2 taken with `phys_to_virt()`, `c2s_band()`
+  cleaning the cache before the kick.
+
+Two negative controls:
+
+* `c2s-rescue/tests/fixtures/c2s_diag_bands.skip-fb2-and-abort.txt` is the
+  painter with both defects put back (fb2 skipped unless the linear alias
+  is ready, and the loop aborting on the first failure). The gate must
+  reject it; three separate assertions do.
+* `c2s-rescue/tests/fixtures/setup_arch.band-in-forbidden-window.txt` is a
+  minimal `setup_arch()` statement order with S2 painted between
+  `cpu_uninstall_idmap()` and `paging_init()`. The gate must reject it;
+  two assertions do.
+
+### Host-verified evidence (candidate 8)
+
+See "Host-verified evidence" in build 9 of `build-record.md` for the
+artefact hashes and the two `verify.sh` runs.
+
+### Still open
+
+* Everything about the panel remains host-unverified: whether the DECON
+  scans fb0, fb1 or fb2, whether `setup_arch()` completes, and where - if
+  anywhere - the C ladder is actually visible.
+* The reason C2/C3 were absent in the diag8 photo (visible rows, no band)
+  is **not** explained by the logo hypothesis. Candidate 8 repaints them
+  through two different paths, so the next photo can tell whether the
+  problem is the paint or the scanout.
+* The USB failure root cause is unchanged: `maximum-speed = "high-speed"`
+  is still a one-variable candidate; the USB milestone bands are gone until
+  diag10.
+* fbcon may overwrite bands at rows >= 640; no console text has appeared on
+  the panel so far.
