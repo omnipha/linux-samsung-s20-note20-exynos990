@@ -19,6 +19,12 @@ CFLAGS_syscall.o	+= -fno-stack-protector
 # collection code to minimize this impact.
 KASAN_SANITIZE_stacktrace.o := n
 
+# The c2s rescue diagnostic band painter runs very early (before
+# boot_init_stack_canary() sets up the canary) and touches device memory
+# directly, so it must not carry a stack protector or sanitizer.
+CFLAGS_REMOVE_c2s_diag_bands.o	 = -fstack-protector -fstack-protector-strong
+KASAN_SANITIZE_c2s_diag_bands.o := n
+
 # It's not safe to invoke KCOV when portions of the kernel environment aren't
 # available or are out-of-sync with HW state. Since `noinstr` doesn't always
 # inhibit KCOV instrumentation, disable it for the entire compilation unit.
@@ -48,6 +54,7 @@ obj-$(CONFIG_HARDLOCKUP_DETECTOR_PERF)	+= watchdog_hld.o
 obj-$(CONFIG_HAVE_HW_BREAKPOINT)	+= hw_breakpoint.o
 obj-$(CONFIG_HAVE_STATIC_CALL)		+= static_call.o
 obj-$(CONFIG_CPU_PM)			+= sleep.o suspend.o
+obj-$(CONFIG_C2S_DIAG)			+= c2s_diag_bands.o
 obj-$(CONFIG_KGDB)			+= kgdb.o
 obj-$(CONFIG_EFI)			+= efi.o efi-rt-wrapper.o
 obj-$(CONFIG_PCI)			+= pci.o

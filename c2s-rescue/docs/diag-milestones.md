@@ -691,3 +691,160 @@ Band addresses in the Image (offset = VA - `0xffff800080000000`):
   (issue #5 task 1) are hardware-only; no host evidence can substitute.
 * Every claim about what the panel shows remains host-unverified until
   the coordinator runs the hardware readout.
+
+## Candidate 6 (turn 2026-11-24): C-level milestone ladder (issue #5)
+
+Candidate 5 proved the whole asm ladder on hardware - white, red, green,
+blue and magenta all present over the Samsung logo - but the USB path still
+never enumerated. The five asm markers are MMU-off/early-MMU only: they say
+nothing about what `start_kernel()` did, whether the UDC was ever
+registered, or whether `/init` exec'd. This candidate adds C-level bands
+that continue the ladder from row 640 downwards.
+
+### Why the two entry points (the part that needed a design decision)
+
+The bands are written from two different places with different mapping
+lifetimes, so there are two entry points rather than one:
+
+| entry point | section | mapping | used for |
+|---|---|---|---|
+| `c2s_band_early(row, colour)` | `.init.text` | boot ID map, then `early_memremap()` | rows 640, 768, 896 (before `free_initmem()`) |
+| `c2s_band(row, colour)` | `.text` | `ioremap_wc()` taken once by `c2s_late_init()` | rows 1024 and above |
+
+`early_memremap()` lives in `.init.text`, so calling it from `.text` is a
+section mismatch that modpost reports as an error - which is exactly the
+first build failure this candidate hit, and why the API was split instead
+of having one function do both. `c2s_late_init()` runs from `start_kernel()`
+immediately after `mm_core_init()`, the point at which vmap and slab are up
+(`mm/mm_init.c` calls `vmalloc_init()` there) and therefore `ioremap*()`
+becomes legal.
+
+Two mapping facts drive the rest:
+
+* **fb0 and fb1 are `no-map` reserved memory** (`reserved-memory/framebuffer@f1000000`
+  and `reserved-memory/audio@f7fb0000` in the DT), so `pfn_is_map_memory()`
+  is false for them: `ioremap_wc()` maps them legally, and they are not in
+  the linear map.
+* **fb2 (`0xfac00000`) is unreserved RAM**. It is painted only while the
+  boot ID map is still live (strictly before `arm64_memblock_init()`), which
+  is the row-640 milestone; afterwards the page allocator owns it and
+  `ioremap_wc()` would refuse to map it (and correctly so - writing there
+  would corrupt the buddy allocator).
+
+`ioremap_wc()` (PROT_NORMAL_NC) rather than `ioremap_cache()` is deliberate:
+`simplefb` maps the very same physical range with `ioremap_wc()`
+(`drivers/video/fbdev/simplefb.c:602`), so our alias carries the same
+memory type fbcon writes through. A cacheable alias of an NC range would be
+a mismatched-attribute alias; the plain stores through the NC alias reach
+memory directly, and `mb()` orders them against the DECON MMIO.
+
+### The ladder
+
+| milestone | rows | colour (AARRGGBB) | where | mapping |
+|---|---|---|---|---|
+| C1 `start_kernel()` entry | 640..767 | yellow `0xffffff00` | first statement of `start_kernel()` | boot ID map (fb2 painted too) |
+| C2 `setup_arch()` done | 768..895 | cyan `0xff00ffff` | after `setup_arch()` returns | `early_memremap()` |
+| C3 `console_init()` done | 896..1023 | orange `0xffffa500` | after `console_init()` | `early_memremap()` |
+| C4 UDC registered | 1024..1151 | pale blue `0xffadd8e6` | `usb_add_gadget()` success | `ioremap_wc()` |
+| C5 `/init` exec attempted | 1152..1279 | pink `0xffffc0cb`, dark red `0xff8b0000` on failure | `run_init_process()` | `ioremap_wc()` |
+| C6 gadget bound | 1280..1407 | lime `0xff32cd32` | `gadget_bind_driver()` success | `ioremap_wc()` |
+| C6 gadget bind failed | 1408..1535 | salmon `0xfffa8072` | `gadget_bind_driver()` `err_bind` path | `ioremap_wc()` |
+| C7 netdev carrier on | 1536..1663 | spring green `0xff00ff7f` | `gether_connect()` after `netif_carrier_on()` | `ioremap_wc()` |
+
+Readout contract (execution order, not row order - the rows run top-down so
+one photo reads as a timeline, but C4..C7 all happen after `/init` starts):
+
+* **640 yellow only** - the kernel never left `start_kernel()`'s first
+  statement, i.e. it died in the asm path after `__primary_switched`.
+  (Candidate 5's hardware run already showed the asm ladder completing, so
+  this case should not occur.)
+* **640 + 768, no 896** - died between `setup_arch()` and `console_init()`
+  (or `early_memremap()` failed there).
+* **up to 896 orange, no 1024** - the kernel ran to `console_init()` but
+  the UDC was never registered. That is a *driver probe* failure, not an
+  enumeration failure: look at dwc3/exynos probe and the DT PHY supplies.
+* **1024 pale blue present, no 1280/1408** - the UDC registered but the
+  gadget driver never bound, or bound without ever reaching
+  `gether_connect()`. The `c2s-gadget.sh` stage log (`KMSG`) is the
+  companion readout for this case.
+* **1280 lime** - the gadget driver bound and the UDC started.
+* **1408 salmon** - bind/udc_start/connect control failed; this is the
+  `err_bind` path and is the failure the `bind-failed-full` log line in
+  `c2s-gadget.sh` reports from the userspace side.
+* **1536 spring green** - the netdev carrier went up, i.e. the host has
+  enumerated and the function is live. This is the "USB works" milestone.
+
+The two milestones that are *not* visible as separate bands: the `/init`
+attempt paints pink before `kernel_execve()` (so it appears even if exec
+never returns) and overpaints dark red if exec fails - the final colour of
+row 1152 is what distinguishes the two cases.
+
+### Host-verified evidence (candidate 6)
+
+* Build: `C2S_DEFCONFIG=c2s_rescue_diag_defconfig
+  C2S_AUTHORIZED_KEYS=$HOME/.ssh/id_ed25519.pub
+  C2S_OUTDIR=/tmp/opencode/c2s-diag7-out build.sh`, exit 0.
+* `verify.sh /tmp/opencode/c2s-diag7-out`: **219 passed, 0 failed**
+  (candidate 5 had 217; the increase is the new call-site gate plus its
+  negative control).
+* **Modpost is clean**: `c2s_band_early()` and `c2s_late_init()` sit in
+  `.init.text` and `c2s_band()` in `.text`, with no `.text` → `.init.*`
+  reference anywhere - the section-mismatch class that forced the API split
+  is gone from the build output.
+* **New gate, `check-c-milestone-bands.py`**: walks the disassembly of all
+  five milestone-bearing functions and checks callee, row *and* colour per
+  call site (10 sites: three `c2s_band_early` + one `c2s_late_init` in
+  `start_kernel`, one in `usb_add_gadget`, two in `run_init_process`, two
+  in `gadget_bind_driver`, one in `gether_connect`). Byte gates only prove
+  `c2s_band()` was compiled in; they cannot tell a milestone wired to the
+  wrong row from one that was never reached.
+* **Gate negative control**: `c2s-rescue/tests/fixtures/gether_connect.wrong-row.txt`
+  is a saved disassembly of `gether_connect()` with the row changed from
+  1536 to 1537. The gate must *reject* it (`RESULT: FAIL`), otherwise it
+  cannot detect row/colour drift. It does reject it.
+* **Compile-out control**: a fresh `c2s_rescue_defconfig` baseline build
+  (`/tmp/opencode/c2s-diag7-base-out`) has `# CONFIG_C2S_DIAG is not set`,
+  no `c2s_band`/`c2s_late_init`/`c2s_decon_kick` symbols in `vmlinux`, and
+  zero framebuffer MOVZ immediates in the Image. Its `verify.sh` run also
+  reports **219 passed, 0 failed**, with the baseline branch of the new
+  gate confirming no milestone call sites exist - so the diagnostic cannot
+  leak into the USB baseline image.
+* `CONFIG_C2S_DIAG=y` in the final `.config`; `arch/arm64/kernel/Makefile`
+  carries `CFLAGS_REMOVE_c2s_diag_bands.o := -fstack-protector
+  -fstack-protector-strong` and `KASAN_SANITIZE_c2s_diag_bands.o := n`
+  (the painter runs before `boot_init_stack_canary()`).
+
+### Artefacts (candidate 6, diag)
+
+| Artefact | Path | Size (B) | sha256 |
+|---|---|---|---|
+| boot.img (signed, candidate 6) | `/tmp/opencode/c2s-diag7-out/boot.img` | 61 865 984 | `ed506c5f3b0712ca8f514f5617fd47997d991d7445eff7a30b6f831d73ffa751` |
+| Image (diag7) | `/tmp/opencode/c2s-diag7-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `c79875f6f563fcb17df6da0c1c4ec24760a91690b35f8d21d5317a44ef6b2153` |
+| DTB | `/tmp/opencode/c2s-diag7-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 867 | `43424d49fc43e92ef00cff558058a3edb232592ab3bd89e6f4262b449fb122f2` |
+| initramfs | `/tmp/opencode/c2s-diag7-out/work/initramfs.cpio.gz` | 3 367 458 | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
+
+The DTB and initramfs are byte-identical to candidate 5 - this candidate
+changes no device-tree content and no initramfs content, only the kernel
+Image. AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table
+`d7b7ab1e` ok, `avbtool verify_image` OK.
+
+### Artefacts (candidate 6, paired baseline)
+
+| Artefact | Path | Size (B) | sha256 |
+|---|---|---|---|
+| boot.img (signed, baseline) | `/tmp/opencode/c2s-diag7-base-out/boot.img` | 61 865 984 | `085a4b7168519cce2f1e00efa1f70a0433ac967642b05cf3b18074f9bb3a5d3b` |
+| Image (baseline) | `/tmp/opencode/c2s-diag7-base-out/kbuild/arch/arm64/boot/Image` | 12 677 632 | `a713350af1a6036ee779d5ffdc1144a598c6605e8d15a7677687932cb2b21505` |
+
+### Still open
+
+* Every claim about what the panel shows remains host-unverified until
+  the coordinator runs the hardware readout (issue #5 task 1).
+* Which of fb0/fb1 the DECON actually scans out is still not proven from
+  sources; both are painted on every late milestone, so the readout is
+  unaffected, but a band visible in one buffer and not the other would
+  identify the scanout source.
+* fbcon may overwrite C bands at rows >= 640 if the console ever renders;
+  so far no console text has appeared on the panel.
+* The dwc3/exynos root cause behind the USB failure is still not proven
+  from sources - this candidate *locates* the failure in the ladder, it
+  does not fix it.

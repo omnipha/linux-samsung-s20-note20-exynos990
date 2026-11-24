@@ -478,6 +478,51 @@ PYEOF
 	fi
 fi
 
+# -------------------------------------- C milestone call sites (issue #5)
+# Byte gates and the DECON count only prove that c2s_band() was compiled in.
+# They say nothing about which function it was wired to or which row it
+# paints - and a milestone painted at the wrong row reads exactly like a
+# milestone that was never reached, which is the misdiagnosis this
+# candidate exists to avoid.  This gate walks the disassembly of every
+# function that carries a milestone and checks callee, row and colour per
+# call site; the baseline branch requires that no such call site exists at
+# all, so the diagnostic cannot leak into the USB baseline build.
+C_MILESTONE_CHECKER="${SCRIPT_DIR}/check-c-milestone-bands.py"
+C_MILESTONE_FIXTURE="${RESCUE_DIR}/tests/fixtures/gether_connect.wrong-row.txt"
+if [ -f "${C_MILESTONE_CHECKER}" ] && [ -x "${VBUILD}" -o -s "${VBUILD}" ]; then
+	if [ "${DIAG_MODE}" = on ]; then
+		C_MS_OUT=$(python3 "${C_MILESTONE_CHECKER}" "${VBUILD}" 2>&1)
+		if [ $? -eq 0 ]; then
+			ok "C milestone call sites: $(printf '%s\n' "${C_MS_OUT}" | tail -n 1)"
+		else
+			bad "C milestone call site gate FAILED: $(printf '%s\n' "${C_MS_OUT}" | tr '\n' '; ')"
+		fi
+	else
+		C_MS_OUT=$(python3 "${C_MILESTONE_CHECKER}" "${VBUILD}" --expect-none 2>&1)
+		if [ $? -eq 0 ]; then
+			ok "C milestone call sites: baseline build carries none"
+		else
+			bad "baseline build carries C milestone call sites: $(printf '%s\n' "${C_MS_OUT}" | tr '\n' '; ')"
+		fi
+	fi
+	# Negative control: a saved listing with the row changed by one must be
+	# rejected, otherwise the gate is insensitive to the very defect it
+	# exists for (row/colour drift at a call site).
+	if [ -s "${C_MILESTONE_FIXTURE}" ]; then
+		if python3 "${C_MILESTONE_CHECKER}" --disasm-file \
+			"${C_MILESTONE_FIXTURE}" --function gether_connect \
+			> /dev/null 2>&1; then
+			bad "C milestone gate negative control FAILED: the wrong-row listing was accepted - the gate cannot detect row/colour drift"
+		else
+			ok "C milestone gate negative control: the wrong-row listing IS rejected (gate is sensitive)"
+		fi
+	else
+		note "no C milestone fixture at ${C_MILESTONE_FIXTURE}; negative control skipped"
+	fi
+else
+	note "C milestone checker or vmlinux missing; call-site gate skipped"
+fi
+
 # ------------------------------------------------- console font (issue #4)
 # 1440x3088 framebuffer: the 16x32 Terminus font gives 90x96 characters.
 # CONFIG_CMDLINE_FORCE=y means fbcon gets its options ONLY through

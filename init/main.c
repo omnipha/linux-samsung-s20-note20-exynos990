@@ -14,6 +14,7 @@
 
 #include <linux/types.h>
 #include <linux/export.h>
+#include <linux/c2s_diag.h>
 #include <linux/extable.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
@@ -1019,6 +1020,22 @@ void start_kernel(void)
 	char *command_line;
 	char *after_dashes;
 
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 milestone C1: the first C code of the kernel that runs
+	 * with the MMU on.  The ID map installed by create_init_idmap() is
+	 * still live in TTBR0 (memstart_addr is still -1, so
+	 * arm64_memblock_init() has not run), therefore the splash
+	 * framebuffers are reachable at their physical addresses and the
+	 * band lands in exactly the same place the M1..M4 asm markers use.
+	 *
+	 * Band rows 640..767 (offset 640 * 5760 = 0x384000), colour yellow
+	 * 0xffffff00.  The asm ladder uses rows 0..639, so the C ladder
+	 * continues directly below it on the panel.
+	 */
+ 	c2s_band_early(640, 0xffffff00);
+#endif
+
 	set_task_stack_end_magic(&init_task);
 	smp_setup_processor_id();
 	debug_objects_early_init();
@@ -1037,6 +1054,16 @@ void start_kernel(void)
 	page_address_init();
 	pr_notice("%s", linux_banner);
 	setup_arch(&command_line);
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 milestone C2: setup_arch() is done, so the boot ID map
+	 * has been uninstalled (cpu_uninstall_idmap) and memstart_addr is
+	 * valid, while early_ioremap_init() has already run - i.e. this is
+	 * the early_memremap() phase of c2s_band_early().  Rows 768..795,
+	 * colour cyan 0xff00ffff.
+	 */
+	c2s_band_early(768, 0xff00ffff);
+#endif
 	mm_core_init_early();
 	/* Static keys and static calls are needed by LSMs */
 	jump_label_init();
@@ -1077,6 +1104,14 @@ void start_kernel(void)
 	sort_main_extable();
 	trap_init();
 	mm_core_init();
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5: vmap and slab are up (mm_core_init runs vmalloc_init()
+	 * and kmem_cache_init()), so take the long-lived fb0/fb1/DECON
+	 * mappings c2s_band() needs.  Plain .text, no __init data.
+	 */
+	c2s_late_init();
+#endif
 	maple_tree_init();
 	poking_init();
 	ftrace_init();
@@ -1158,6 +1193,14 @@ void start_kernel(void)
 	if (panic_later)
 		panic("Too many boot %s vars at `%s'", panic_later,
 		      panic_param);
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 milestone C3: console_init() returned.  Still __init,
+	 * before free_initmem(), so the early_*remap path is still valid.
+	 * Rows 896..1023, colour orange 0xffffa500.
+	 */
+	c2s_band_early(896, 0xffffa500);
+#endif
 
 	lockdep_init();
 
@@ -1502,6 +1545,7 @@ static void __init do_pre_smp_initcalls(void)
 static int run_init_process(const char *init_filename)
 {
 	const char *const *p;
+	int ret;
 
 	argv_init[0] = init_filename;
 	pr_info("Run %s as init process\n", init_filename);
@@ -1511,7 +1555,22 @@ static int run_init_process(const char *init_filename)
 	pr_debug("  with environment:\n");
 	for (p = envp_init; *p; p++)
 		pr_debug("    %s\n", *p);
-	return kernel_execve(init_filename, argv_init, envp_init);
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #5 milestone C6: /init exec attempted, rows 1152..1279.
+	 * Painted before the attempt so the band appears even if exec never
+	 * returns; a failing attempt then overpaints the same row in dark
+	 * red, so the final colour of row 1152 separates the two cases
+	 * (pink 0xffffc0cb = attempted/ok, dark red 0xff8b0000 = failed).
+	 */
+	c2s_band(1152, 0xffffc0cb);
+#endif
+	ret = kernel_execve(init_filename, argv_init, envp_init);
+#ifdef CONFIG_C2S_DIAG
+	if (ret)
+		c2s_band(1152, 0xff8b0000);
+#endif
+	return ret;
 }
 
 static int try_to_run_init_process(const char *init_filename)

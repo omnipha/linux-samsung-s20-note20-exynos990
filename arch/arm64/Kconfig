@@ -2456,6 +2456,12 @@ config C2S_DIAG
 	  enabled, the kernel writes early boot milestone markers as plain
 	  physical stores (MMU off, registers and adrp/adr only) into the
 	  framebuffers so a dying kernel leaves a visible trace on screen.
+	  On top of that, C-level milestone bands are painted from
+	  arch/arm64/kernel/c2s_diag_bands.c: c2s_band_early() from
+	  start_kernel() (ID map, then early_memremap) and c2s_band() from
+	  the USB stack and /init launch (long-lived ioremap taken by
+	  c2s_late_init() after mm_core_init()), continuing the asm ladder
+	  downwards so one panel photo shows how far the boot got.
 	  The symbol is enabled only in c2s_rescue_diag_defconfig (the
 	  earlier diagnostic build); the minimal USB baseline
 	  c2s_rescue_defconfig leaves it off, so the rescue Image carries no

@@ -955,3 +955,77 @@ of a 61 865 984 B image.
 * That `sudo -n id` elevates on the device: qemu-user does not emulate
   setuid, so the non-root elevation path is proven natively on the host
   (x86_64 sudo-rs 0.2.13) and must be confirmed on the device.
+
+## Build 7 (turn 2026-11-24): C-level milestone ladder
+
+### Build commands (build host)
+
+```
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag7-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag7-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag7-out
+```
+
+The paired baseline (the same tree, `CONFIG_C2S_DIAG` off) was built the
+same way into `/tmp/opencode/c2s-diag7-base-out` and verified as well.
+
+`build.sh` exit 0; `package-bootimg.sh` exit 0; `verify.sh` exit 0 for both
+(**219 passed, 0 failed** each; build 6 had 217).
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag7, signed) | `/tmp/opencode/c2s-diag7-out/boot.img` | 61 865 984 | `ed506c5f3b0712ca8f514f5617fd47997d991d7445eff7a30b6f831d73ffa751` |
+| Image (diag7) | `/tmp/opencode/c2s-diag7-out/kbuild/arch/arm64/boot/Image` | 12 808 704 | `c79875f6f563fcb17df6da0c1c4ec24760a91690b35f8d21d5317a44ef6b2153` |
+| DTB | `/tmp/opencode/c2s-diag7-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 141 867 | `43424d49fc43e92ef00cff558058a3edb232592ab3bd89e6f4262b449fb122f2` |
+| initramfs | `/tmp/opencode/c2s-diag7-out/work/initramfs.cpio.gz` | 3 367 458 | `515de1c3d5d9cb4ef6196d4382bfd6b7e3c41a17461e00662e486769758c70fa` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag7-base-out/boot.img` | 61 865 984 | `085a4b7168519cce2f1e00efa1f70a0433ac967642b05cf3b18074f9bb3a5d3b` |
+| Image (baseline) | `/tmp/opencode/c2s-diag7-base-out/kbuild/arch/arm64/boot/Image` | 12 677 632 | `a713350af1a6036ee779d5ffdc1144a598c6605e8d15a7677687932cb2b21505` |
+
+DTB and initramfs are byte-identical to build 6: this build changes only
+the kernel Image. AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT
+table `d7b7ab1e`, FDT 141 867 B == kbuild DTB.
+
+### What changed in the kernel
+
+* `include/linux/c2s_diag.h` - the diagnostic API: `c2s_band_early()`
+  (`.init.text`, boot ID map and `early_memremap()`),
+  `c2s_late_init()` (`.init.text`, takes the long-lived mappings) and
+  `c2s_band()` (`.text`, plain stores through those mappings).
+* `arch/arm64/kernel/c2s_diag_bands.c` - the painter: band fill, DECON0
+  shadow update, and the two mapping strategies.
+* `init/main.c` - milestones at `start_kernel()` entry (row 640), after
+  `setup_arch()` (768), after `console_init()` (896), the
+  `c2s_late_init()` call after `mm_core_init()`, and the `/init` exec
+  attempt (1152).
+* `drivers/usb/gadget/udc/core.c` - UDC registered (1024), gadget bound
+  (1280), bind failed (1408).
+* `drivers/usb/gadget/function/u_ether.c` - netdev carrier on (1536).
+
+### Host evidence
+
+* Modpost is clean: no `.text` -> `.init.text` reference remains. The
+  split API exists because `early_memremap()` lives in `.init.text` and
+  calling it from `.text` is a section mismatch.
+* New gate `c2s-rescue/scripts/check-c-milestone-bands.py` verifies callee,
+  row and colour of all 10 milestone call sites in the disassembly of the
+  five functions that carry them.
+* Gate negative control: the committed fixture
+  `c2s-rescue/tests/fixtures/gether_connect.wrong-row.txt` (row 1536
+  changed to 1537) is rejected - the gate is sensitive to row drift.
+* Compile-out control: the paired baseline has no `c2s_*` symbols, zero
+  framebuffer MOVZ immediates in the Image and no milestone call sites;
+  its `verify.sh` run is 219/0 as well.
+
+### What is still NOT proven
+
+* That the panel shows any of the C bands (hardware only).
+* Where the USB failure actually is - the ladder locates it, it does not
+  fix it.
