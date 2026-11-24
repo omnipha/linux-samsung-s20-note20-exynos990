@@ -233,7 +233,7 @@ hostname ip ifconfig route grep sed awk vi less more head tail cut tr sort \
 kill killall pidof ps top setsid cttyhack telnet telnetd udhcpc udhcpd nc \
 netstat sysctl login passwd printf test chmod chown stat dd tar gzip gunzip \
 uname env date echo expr find xargs tee touch which timeout od \
-id whoami groups"
+id whoami groups sha256sum readlink basename sync blockdev df wc reboot devmem"
 for a in ${APPLETS}; do
 	ln -sf /bin/busybox "${ROOT}/bin/${a}"
 done
@@ -262,6 +262,12 @@ cp "${RESCUE_DIR}/initramfs/usr/bin/rescue-menu" "${ROOT}/usr/bin/rescue-menu"
 chmod 0755 "${ROOT}/usr/bin/rescue-menu"
 cp "${WORK}/rescue-menu-keys" "${ROOT}/usr/bin/rescue-menu-keys"
 chmod 0755 "${ROOT}/usr/bin/rescue-menu-keys"
+cp "${RESCUE_DIR}/initramfs/usr/sbin/c2s-blockmap" "${ROOT}/usr/sbin/c2s-blockmap"
+chmod 0755 "${ROOT}/usr/sbin/c2s-blockmap"
+cp "${RESCUE_DIR}/initramfs/usr/sbin/c2s-flash-boot" "${ROOT}/usr/sbin/c2s-flash-boot"
+chmod 0755 "${ROOT}/usr/sbin/c2s-flash-boot"
+cp "${RESCUE_DIR}/initramfs/usr/sbin/c2s-reboot-recovery" "${ROOT}/usr/sbin/c2s-reboot-recovery"
+chmod 0755 "${ROOT}/usr/sbin/c2s-reboot-recovery"
 chmod 0644 "${ROOT}/etc/rescue.conf" "${ROOT}/etc/issue" "${ROOT}/etc/shells"
 
 # sudo-rs and its runtime libraries (passwordless sudo for the SSH login
@@ -364,6 +370,9 @@ LIST="${WORK}/cpio.list"
 	echo "file /usr/bin/rescue-telnet ${ROOT}/usr/bin/rescue-telnet 0755 0 0"
 	echo "file /usr/bin/rescue-menu ${ROOT}/usr/bin/rescue-menu 0755 0 0"
 	echo "file /usr/bin/rescue-menu-keys ${ROOT}/usr/bin/rescue-menu-keys 0755 0 0"
+	echo "file /usr/sbin/c2s-blockmap ${ROOT}/usr/sbin/c2s-blockmap 0755 0 0"
+	echo "file /usr/sbin/c2s-flash-boot ${ROOT}/usr/sbin/c2s-flash-boot 0755 0 0"
+	echo "file /usr/sbin/c2s-reboot-recovery ${ROOT}/usr/sbin/c2s-reboot-recovery 0755 0 0"
 	echo "file /usr/lib/c2s-gadget.sh ${ROOT}/usr/lib/c2s-gadget.sh 0644 0 0"
 	# sudo-rs + runtime.  04755 on /usr/bin/sudo: sudo-rs refuses to load
 	# a sudo binary that is not owned by uid 0 *with* the setuid bit.

@@ -196,6 +196,40 @@ case "${GADGET_STATUS}" in
     ;;
 esac
 
+# ------------------------------------------------------------- storage / UFS
+# Scan for block devices and create /dev/block/by-name/<partlabel> symlinks.
+# If block devices are present, run c2s-blockmap and log the mapped partitions;
+# otherwise log the exact status to /dev/kmsg so SSH/dmesg reflects hardware state.
+scan_storage() {
+    local blk_list=""
+    for b in /sys/class/block/*; do
+        [ -e "${b}" ] || continue
+        case "${b##*/}" in
+            ram*|loop*) ;;
+            *) blk_list="${blk_list} ${b##*/}" ;;
+        esac
+    done
+
+    if [ -n "${blk_list}" ]; then
+        log "storage: block devices found:${blk_list}"
+        if [ -x /usr/sbin/c2s-blockmap ]; then
+            local map_out
+            map_out=$(/usr/sbin/c2s-blockmap 2>&1)
+            log "storage: ${map_out}"
+        fi
+        if [ -L /dev/block/by-name/boot ]; then
+            local boot_target
+            boot_target=$(readlink -f /dev/block/by-name/boot 2>/dev/null || readlink /dev/block/by-name/boot)
+            log "storage: boot partition mapped: /dev/block/by-name/boot -> ${boot_target}"
+        else
+            log "storage: /dev/block/by-name/boot NOT found in partition map"
+        fi
+    else
+        log "storage: no physical block devices found in /sys/class/block (/proc/partitions empty)"
+    fi
+}
+scan_storage
+
 # ------------------------------------------------------------- boot menu
 # Selection between "rescue (SSH only, default)" and "rescue + USB
 # telnet". The stock c2s bootloader (sboot) offers no menu of its own,

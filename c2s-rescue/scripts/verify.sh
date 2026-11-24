@@ -68,7 +68,10 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
          PHY_EXYNOS5_USBDRD NET UNIX INET DEVTMPFS TMPFS BLK_DEV_INITRD RD_GZIP \
          BINFMT_ELF BINFMT_SCRIPT MULTIUSER UNIX98_PTYS FB FB_SIMPLE \
          FRAMEBUFFER_CONSOLE VT VT_CONSOLE INPUT INPUT_EVDEV KEYBOARD_GPIO \
-         IKCONFIG IKCONFIG_PROC PRINTK_TIME; do
+         IKCONFIG IKCONFIG_PROC PRINTK_TIME \
+         SCSI BLK_DEV_SD SCSI_UFSHCD SCSI_UFSHCD_PLATFORM SCSI_UFS_EXYNOS \
+         PHY_SAMSUNG_UFS EFI_PARTITION PARTITION_ADVANCED POWER_RESET \
+         REBOOT_MODE SYSCON_REBOOT_MODE; do
 	require_cfg "$s" y
 done
 # Negative control for CONFIG_UNIX gate: prove that an unset CONFIG_UNIX
@@ -83,6 +86,18 @@ if printf '%s\n' "${_neg_out}" | grep -q "FAIL: CONFIG_UNIX"; then
 	ok "CONFIG_UNIX negative control: unset CONFIG_UNIX is rejected (gate is sensitive)"
 else
 	bad "CONFIG_UNIX negative control failed: unset CONFIG_UNIX was not rejected: ${_neg_out}"
+fi
+# Negative control for CONFIG_SCSI gate: prove that an unset CONFIG_SCSI
+# is detected and rejected by require_cfg.
+_neg_scsi_cfg=$(mktemp)
+grep -v "^CONFIG_SCSI=" "${CONFIG}" > "${_neg_scsi_cfg}"
+echo "# CONFIG_SCSI is not set" >> "${_neg_scsi_cfg}"
+_neg_scsi_out=$(CONFIG="${_neg_scsi_cfg}" require_cfg SCSI y)
+rm -f "${_neg_scsi_cfg}"
+if printf '%s\n' "${_neg_scsi_out}" | grep -q "FAIL: CONFIG_SCSI"; then
+	ok "CONFIG_SCSI negative control: unset CONFIG_SCSI is rejected (gate is sensitive)"
+else
+	bad "CONFIG_SCSI negative control failed: unset CONFIG_SCSI was not rejected: ${_neg_scsi_out}"
 fi
 require_cfg CMDLINE_FORCE y
 require_cfg PANIC_TIMEOUT 0
@@ -974,6 +989,34 @@ else
 	bad "/init does not look for /home/rescue/.ssh/authorized_keys"
 fi
 
+# ------------------------------------- storage tools (issue #5, diag15)
+section "storage and rescue tools in cpio (issue #5, diag15)"
+for tool in "usr/sbin/c2s-blockmap" "usr/sbin/c2s-flash-boot" "usr/sbin/c2s-reboot-recovery"; do
+	TOOL_ENTRY=$(CPIO_ENTRY "${tool}")
+	if [ -n "${TOOL_ENTRY}" ]; then
+		ok "archive carries /${tool}: ${TOOL_ENTRY}"
+		if printf '%s\n' "${TOOL_ENTRY}" | grep -qE '^100755 '; then
+			ok "archive /${tool} is executable (0755)"
+		else
+			bad "archive /${tool} is not mode 0755: ${TOOL_ENTRY}"
+		fi
+		TOOL_UID=$(printf '%s\n' "${TOOL_ENTRY}" | awk '{print $2}')
+		TOOL_GID=$(printf '%s\n' "${TOOL_ENTRY}" | awk '{print $3}')
+		if [ "${TOOL_UID}" = "0" ] && [ "${TOOL_GID}" = "0" ]; then
+			ok "archive /${tool} is owned by uid 0 gid 0"
+		else
+			bad "archive /${tool} is not owned by root (uid=${TOOL_UID} gid=${TOOL_GID})"
+		fi
+	else
+		bad "archive is missing /${tool}"
+	fi
+	if [ -x "${UNPACK}/${tool}" ]; then
+		ok "extracted /${tool} is executable"
+	else
+		bad "extracted /${tool} is not executable"
+	fi
+done
+
 # --- functional: run the shipped sudo under a root-owned chroot
 # sudo-rs checks that it is owned by uid 0 and setuid, so the tree must be
 # root-owned.  The host's passwordless sudo is used to copy the extracted
@@ -1071,6 +1114,60 @@ else
 	note "host has no passwordless sudo; functional sudo test skipped (content gates above still apply)"
 fi
 
+# ------------------------------------- storage tools (issue #5, diag15)
+section "storage tools (issue #5, diag15)"
+check "/usr/sbin/c2s-blockmap present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-blockmap"
+check "/usr/sbin/c2s-flash-boot present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-flash-boot"
+
+BM_ENTRY=$(CPIO_ENTRY "usr/sbin/c2s-blockmap")
+if [ -n "${BM_ENTRY}" ]; then
+	ok "archive carries /usr/sbin/c2s-blockmap: ${BM_ENTRY}"
+	BM_UID=$(printf '%s\n' "${BM_ENTRY}" | awk '{print $2}')
+	BM_GID=$(printf '%s\n' "${BM_ENTRY}" | awk '{print $3}')
+	if [ "${BM_UID}" = "0" ] && [ "${BM_GID}" = "0" ]; then
+		ok "archive /usr/sbin/c2s-blockmap is root-owned (uid 0 gid 0)"
+	else
+		bad "archive /usr/sbin/c2s-blockmap is not root-owned (uid=${BM_UID} gid=${BM_GID})"
+	fi
+	if printf '%s\n' "${BM_ENTRY}" | grep -qE '^100755 '; then
+		ok "archive /usr/sbin/c2s-blockmap is executable (mode 0755)"
+	else
+		bad "archive /usr/sbin/c2s-blockmap is not executable mode 0755: ${BM_ENTRY}"
+	fi
+else
+	bad "archive missing /usr/sbin/c2s-blockmap"
+fi
+
+FB_ENTRY=$(CPIO_ENTRY "usr/sbin/c2s-flash-boot")
+if [ -n "${FB_ENTRY}" ]; then
+	ok "archive carries /usr/sbin/c2s-flash-boot: ${FB_ENTRY}"
+	FB_UID=$(printf '%s\n' "${FB_ENTRY}" | awk '{print $2}')
+	FB_GID=$(printf '%s\n' "${FB_ENTRY}" | awk '{print $3}')
+	if [ "${FB_UID}" = "0" ] && [ "${FB_GID}" = "0" ]; then
+		ok "archive /usr/sbin/c2s-flash-boot is root-owned (uid 0 gid 0)"
+	else
+		bad "archive /usr/sbin/c2s-flash-boot is not root-owned (uid=${FB_UID} gid=${FB_GID})"
+	fi
+	if printf '%s\n' "${FB_ENTRY}" | grep -qE '^100755 '; then
+		ok "archive /usr/sbin/c2s-flash-boot is executable (mode 0755)"
+	else
+		bad "archive /usr/sbin/c2s-flash-boot is not executable mode 0755: ${FB_ENTRY}"
+	fi
+else
+	bad "archive missing /usr/sbin/c2s-flash-boot"
+fi
+
+# Verify busybox symlinks for storage utilities
+for a in sha256sum readlink basename sync blockdev df wc; do
+	check "/bin/${a} is linked in the extracted rootfs" test -x "${UNPACK}/bin/${a}"
+	A_ENTRY=$(CPIO_ENTRY "bin/${a}")
+	if [ -n "${A_ENTRY}" ]; then
+		ok "archive carries /bin/${a} symlink"
+	else
+		bad "archive missing /bin/${a} symlink"
+	fi
+done
+
 # ------------------------------------------------ regression (issue #4)
 # The shipped archive itself (not the staging tree) must carry every
 # applet symlink /init calls. The defect this guards against: build.sh
@@ -1081,7 +1178,7 @@ INIT="${UNPACK}/init"
 # applets referenced as bare commands in /init (heuristic: word at a
 # command position); these are the ones the menu/services need.
 REQUIRED_APPLETS="mount mkdir ip ln sleep timeout od dd awk cat grep tr \
-setsid cttyhack telnetd dropbear"
+setsid cttyhack telnetd dropbear readlink reboot devmem"
 MISSING=""
 for a in ${REQUIRED_APPLETS}; do
 	# dropbear is a real binary, everything else must be a busybox link
@@ -1233,6 +1330,10 @@ if grep -q 'dropbear NOT started (console-only stage)' "${INIT}"; then
 else
 	bad "init: console-only stage still risks starting dropbear"
 fi
+check "init calls c2s-blockmap" \
+	grep -q "c2s-blockmap" "${INIT}"
+check "init logs storage detection to kmsg" \
+	grep -q "storage: block devices found" "${INIT}"
 
 # ------------------------------------------------- boot menu functional
 # Exercise the shipped rescue-menu (wrapper) and rescue-menu-keys (input
@@ -1799,6 +1900,16 @@ check "usbdrd enabled" \
 	grep -q "usb@10e00000" "${DTB_TXT}"
 check "usbdrd_phy compatible is exynos990" \
 	grep -q "samsung,exynos990-usbdrd-phy" "${DTB_TXT}"
+check "ufs_0 enabled" \
+	grep -q "ufs@13100000" "${DTB_TXT}"
+check "ufs_0 compatible is exynos990-ufs" \
+	grep -q "samsung,exynos990-ufs" "${DTB_TXT}"
+check "ufs_0_phy enabled" \
+	grep -q "phy@13104000" "${DTB_TXT}"
+check "ufs_0_phy compatible is exynos990-ufs-phy" \
+	grep -q "samsung,exynos990-ufs-phy" "${DTB_TXT}"
+check "ufs_vcc_reg regulator present" \
+	grep -q "regulator-ufs-vcc" "${DTB_TXT}"
 # Last region: 5 x <0x8.. 0x80000000> 2 GiB chunks -> ends at 0xb00000000.
 # (#size-cells=1 caps each entry at 4 GiB, so the 10 GiB region is split.)
 check "memory highmem split 0x880000000..0xb00000000 present" \
@@ -2137,6 +2248,19 @@ fi
 printf '%s\n' "${FI_OUT}" | grep -q 'cannot be observed' \
 	&& ok "fault-injection: limitations of host evidence are stated in its output" \
 	|| bad "fault-injection: does not state which stages cannot be observed on a host"
+
+# --------------------------------- storage tools fault injection (host)
+section "storage tools fault injection (blockmap & flash-boot)"
+FB_OUT=$(bash "${SCRIPT_DIR}/test-flash-boot.sh" "${OUTDIR}" 2>&1)
+FB_RC=$?
+FB_PASS=$(printf '%s\n' "${FB_OUT}" | grep -c '^PASS:')
+FB_FAIL=$(printf '%s\n' "${FB_OUT}" | grep -c '^FAIL:')
+printf '%s\n' "${FB_OUT}" | grep '^FAIL:' | while read -r l; do bad "test-flash-boot: ${l#FAIL: }"; done
+if [ "${FB_RC}" -eq 0 ] && [ "${FB_FAIL}" -eq 0 ] && [ "${FB_PASS}" -ge 10 ]; then
+	ok "test-flash-boot: ${FB_PASS} checks passed, 0 failed (all negative controls verified)"
+else
+	bad "test-flash-boot: rc=${FB_RC} pass=${FB_PASS} fail=${FB_FAIL}"
+fi
 
 # ------------------------------------------- host-run functional smoke test
 section "functional smoke test (host-run dropbear, key-only)"

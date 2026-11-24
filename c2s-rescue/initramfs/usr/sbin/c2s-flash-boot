@@ -1,0 +1,158 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+#
+# /usr/sbin/c2s-flash-boot <image> <expected-sha256>
+#
+# Flashes a new boot image safely to /dev/block/by-name/boot:
+#   1. Validates that the provided image sha256 matches <expected-sha256>.
+#   2. Validates that /dev/block/by-name/boot exists, is a symlink, and resolves
+#      to a partition whose sysfs PARTNAME is strictly 'boot' (never writes any
+#      other partition).
+#   3. Validates that the image file size strictly equals the partition size.
+#   4. Checks available RAM on /run (tmpfs) and saves a backup of the current
+#      boot partition to /run/boot-backup.img. If RAM is insufficient, refuses
+#      with an explicit message and does not touch storage.
+#   5. Writes the image using dd and syncs.
+#   6. Reads back the written partition, verifies full size and sha256 hash.
+#   7. Prints OK or FAIL and returns matching exit code.
+
+set -e
+
+if [ "$#" -ne 2 ]; then
+    echo "FAIL: usage: c2s-flash-boot <image> <expected-sha256>" >&2
+    exit 1
+fi
+
+IMAGE="$1"
+EXPECTED_SHA256="$(echo "$2" | tr '[:upper:]' '[:lower:]')"
+
+if [ ! -f "${IMAGE}" ] || [ ! -r "${IMAGE}" ]; then
+    echo "FAIL: image file '${IMAGE}' does not exist or is not readable" >&2
+    exit 1
+fi
+
+# 1. Verify image sha256 before doing anything
+ACTUAL_SHA256="$(sha256sum "${IMAGE}" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
+if [ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]; then
+    echo "FAIL: image sha256 mismatch (got ${ACTUAL_SHA256}, expected ${EXPECTED_SHA256})" >&2
+    exit 1
+fi
+
+DEVFS="${C2S_DEV_DIR:-/dev}"
+SYSFS="${C2S_SYSFS_DIR:-/sys}"
+RUN_DIR="${C2S_RUN_DIR:-/run}"
+
+TARGET="${DEVFS}/block/by-name/boot"
+
+# 2. Validate target device and symlink
+if [ ! -e "${TARGET}" ]; then
+    echo "FAIL: target device '${TARGET}' does not exist" >&2
+    exit 1
+fi
+
+if [ ! -L "${TARGET}" ]; then
+    echo "FAIL: target '${TARGET}' is not a symlink" >&2
+    exit 1
+fi
+
+REAL_DEV="$(readlink -f "${TARGET}" 2>/dev/null || readlink "${TARGET}")"
+if [ -z "${REAL_DEV}" ] || [ ! -e "${REAL_DEV}" ]; then
+    echo "FAIL: unable to resolve target symlink '${TARGET}'" >&2
+    exit 1
+fi
+
+# Strictly verify PARTNAME == boot
+DEVNAME="$(basename "${REAL_DEV}")"
+UEVENT="${SYSFS}/class/block/${DEVNAME}/uevent"
+if [ ! -f "${UEVENT}" ]; then
+    echo "FAIL: missing sysfs uevent for ${DEVNAME} at ${UEVENT}" >&2
+    exit 1
+fi
+
+PARTNAME=""
+while IFS='=' read -r key val || [ -n "${key}" ]; do
+    if [ "${key}" = "PARTNAME" ]; then
+        PARTNAME="${val}"
+    fi
+done < "${UEVENT}"
+
+if [ "${PARTNAME}" != "boot" ]; then
+    echo "FAIL: target partition name '${PARTNAME}' is not 'boot' (refusing to flash non-boot partition)" >&2
+    exit 1
+fi
+
+# 3. Validate image size against partition size
+IMG_SIZE="$(stat -c %s "${IMAGE}")"
+
+PART_SIZE=""
+if [ -f "${SYSFS}/class/block/${DEVNAME}/size" ]; then
+    SEC_CNT="$(cat "${SYSFS}/class/block/${DEVNAME}/size")"
+    PART_SIZE=$((SEC_CNT * 512))
+elif command -v blockdev >/dev/null 2>&1 && blockdev --getsize64 "${REAL_DEV}" >/dev/null 2>&1; then
+    PART_SIZE="$(blockdev --getsize64 "${REAL_DEV}")"
+else
+    PART_SIZE="$(stat -L -c %s "${REAL_DEV}")"
+fi
+
+if [ "${IMG_SIZE}" -ne "${PART_SIZE}" ]; then
+    echo "FAIL: size mismatch: image size (${IMG_SIZE} B) does not match partition size (${PART_SIZE} B)" >&2
+    exit 1
+fi
+
+# 4. Check RAM on /run and save backup
+if [ ! -d "${RUN_DIR}" ]; then
+    mkdir -p "${RUN_DIR}"
+fi
+
+# Check available space in RUN_DIR
+if [ -n "${C2S_TEST_AVAIL_BYTES:-}" ]; then
+    AVAIL_BYTES="${C2S_TEST_AVAIL_BYTES}"
+else
+    AVAIL_K="$(df -k "${RUN_DIR}" 2>/dev/null | awk 'NR>1 {print $(NF-2)}' | tr -d ' ')"
+    if [ -n "${AVAIL_K}" ]; then
+        AVAIL_BYTES=$((AVAIL_K * 1024))
+    else
+        AVAIL_BYTES=0
+    fi
+fi
+
+# We require at least PART_SIZE + 2 MiB safety margin in /run
+REQUIRED_BYTES=$((PART_SIZE + 2097152))
+if [ "${AVAIL_BYTES}" -lt "${REQUIRED_BYTES}" ]; then
+    echo "FAIL: insufficient RAM in ${RUN_DIR} for backup (available: ${AVAIL_BYTES} B, required: ${REQUIRED_BYTES} B)" >&2
+    exit 1
+fi
+
+BACKUP_FILE="${RUN_DIR}/boot-backup.img"
+echo "c2s-flash-boot: saving backup of current partition to ${BACKUP_FILE}..."
+dd if="${REAL_DEV}" of="${BACKUP_FILE}" bs=1M status=none
+sync
+
+BACKUP_SIZE="$(stat -c %s "${BACKUP_FILE}")"
+if [ "${BACKUP_SIZE}" -ne "${PART_SIZE}" ]; then
+    echo "FAIL: backup write incomplete (${BACKUP_SIZE} != ${PART_SIZE} B)" >&2
+    exit 1
+fi
+
+# 5. Write image using dd and sync
+echo "c2s-flash-boot: writing ${IMAGE} to ${REAL_DEV}..."
+dd if="${IMAGE}" of="${REAL_DEV}" bs=1M status=none conv=fsync 2>/dev/null || dd if="${IMAGE}" of="${REAL_DEV}" bs=1M status=none
+sync
+
+# 6. Read back and verify
+echo "c2s-flash-boot: reading back partition for verification..."
+READBACK_DEV="${C2S_TEST_READBACK_DEV:-${REAL_DEV}}"
+READBACK_SIZE="$(head -c "${PART_SIZE}" "${READBACK_DEV}" | wc -c)"
+if [ "${READBACK_SIZE}" -ne "${PART_SIZE}" ]; then
+    echo "FAIL: short readback (${READBACK_SIZE} != ${PART_SIZE} B)" >&2
+    exit 1
+fi
+
+READBACK_SHA256="$(head -c "${PART_SIZE}" "${READBACK_DEV}" | sha256sum | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
+if [ "${READBACK_SHA256}" != "${EXPECTED_SHA256}" ]; then
+    echo "FAIL: readback verification failed (got ${READBACK_SHA256}, expected ${EXPECTED_SHA256})" >&2
+    exit 1
+fi
+
+echo "OK: successfully flashed ${REAL_DEV} and verified sha256 ${READBACK_SHA256}"
+exit 0

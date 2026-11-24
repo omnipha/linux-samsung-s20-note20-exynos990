@@ -1,0 +1,23 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+#
+# /usr/sbin/c2s-reboot-recovery: reboot into recovery (TWRP)
+#
+# Reboot-mode investigation: Samsung Exynos 990 / 9830 downstream kernels
+# use sec_reboot.c with private SMC/TrustZone calls or INFORM scratchpad
+# tokens (e.g. SEC_RESET_REASON_RECOVERY), not a standard syscon-reboot-mode
+# contract. Because the bootloader (sboot/LK) magic register contract is
+# unproven on c2s hardware, unproven register values are not guessed.
+# We issue standard reboot commands.
+
+echo "c2s-reboot-recovery: syncing storage and requesting reboot..."
+sync
+
+if command -v reboot >/dev/null 2>&1; then
+    echo "c2s-reboot-recovery: issuing reboot recovery..."
+    reboot recovery 2>/dev/null || reboot -f 2>/dev/null || busybox reboot -f
+else
+    echo "c2s-reboot-recovery: reboot applet not found, using sysrq"
+    echo b > /proc/sysrq-trigger
+fi
+
