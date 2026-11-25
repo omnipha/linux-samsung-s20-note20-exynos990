@@ -135,6 +135,7 @@ CONFIG_CGROUP_CPUACCT=y
 CONFIG_CGROUP_SCHED=y
 CONFIG_AUTOFS_FS=y
 CONFIG_SECCOMP=y
+CONFIG_SWIOTLB=y
 
 # Minimal USB baseline: CONFIG_C2S_DIAG is deliberately NOT enabled here.
 # The diagnostic candidate writes milestone markers (M1/MMU-off, M2/MMU-on)

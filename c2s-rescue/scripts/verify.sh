@@ -77,7 +77,7 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
          INPUT_TOUCHSCREEN TOUCHSCREEN_S6SY761 \
          DRM DRM_SIMPLEDRM DRM_FBDEV_EMULATION DRM_PANFROST \
          EXT4_FS EXT4_FS_POSIX_ACL CGROUPS CGROUP_PIDS CGROUP_DEVICE \
-         CGROUP_CPUACCT CGROUP_SCHED AUTOFS_FS SECCOMP; do
+         CGROUP_CPUACCT CGROUP_SCHED AUTOFS_FS SECCOMP SWIOTLB; do
 	require_cfg "$s" y
 done
 # Negative control for CONFIG_EXT4_FS gate: prove that an unset CONFIG_EXT4_FS
@@ -187,6 +187,17 @@ if printf '%s\n' "${_neg_dyndbg_out}" | grep -q "FAIL: CONFIG_DYNAMIC_DEBUG"; th
 	ok "CONFIG_DYNAMIC_DEBUG negative control: unset symbol is rejected (gate is sensitive)"
 else
 	bad "CONFIG_DYNAMIC_DEBUG negative control failed: ${_neg_dyndbg_out}"
+fi
+# Negative control for CONFIG_SWIOTLB gate:
+_neg_swiotlb_cfg=$(mktemp)
+grep -v "^CONFIG_SWIOTLB=" "${CONFIG}" > "${_neg_swiotlb_cfg}"
+echo "# CONFIG_SWIOTLB is not set" >> "${_neg_swiotlb_cfg}"
+_neg_swiotlb_out=$(CONFIG="${_neg_swiotlb_cfg}" require_cfg SWIOTLB y)
+rm -f "${_neg_swiotlb_cfg}"
+if printf '%s\n' "${_neg_swiotlb_out}" | grep -q "FAIL: CONFIG_SWIOTLB"; then
+	ok "CONFIG_SWIOTLB negative control: unset symbol is rejected (gate is sensitive)"
+else
+	bad "CONFIG_SWIOTLB negative control failed: ${_neg_swiotlb_out}"
 fi
 if grep -q "^CONFIG_FB_SIMPLE=y" "${CONFIG}" 2> /dev/null; then
 	bad "CONFIG_FB_SIMPLE=y (should be superseded by DRM_SIMPLEDRM)"
@@ -2548,14 +2559,18 @@ else
 fi
 rm -f "${_neg_ev_md}"
 
-# ------------------------------------------------------------ UFS driver verification (diag22c, issue #20)
-section "ufs driver verification (diag22c, issue #20)"
+# ------------------------------------------------------------ UFS driver verification (diag22d, issue #20)
+section "ufs driver verification (diag22d, issue #20)"
 check "dma-coherent property present in ufs node" \
 	sh -c 'fdtget "$1" /soc@0/ufs@13100000 dma-coherent' _ "${DTB}"
 check "limit-hs-gear property present in ufs node" \
 	sh -c 'test "$(fdtget "$1" /soc@0/ufs@13100000 limit-hs-gear 2>/dev/null)" = "3"' _ "${DTB}"
 check "exynos_ufs_get_hs_gear caps exynos990 to UFS_HS_G3" \
 	sh -c 'grep -A 15 "exynos_ufs_get_hs_gear" "$1" | grep -q "of_device_is_compatible.*samsung,exynos990-ufs"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+check "set_dma_mask callback wired in ufs_hba_exynos_ops" \
+	sh -c 'grep -A 15 "ufs_hba_exynos_ops" "$1" | grep -q "\.set_dma_mask[[:space:]]*=[[:space:]]*exynos_ufs_set_dma_mask"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+check "exynos_ufs_set_dma_mask sets 32-bit DMA mask and logs UFS DMA mask 32" \
+	sh -c 'grep -A 10 "exynos_ufs_set_dma_mask" "$1" | grep -q "UFS DMA mask 32"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "UFS_EXYNOS990_SHARABLE defined as 0x00c00000 in ufs-exynos.c" \
 	grep -q "#define UFS_EXYNOS990_SHARABLE[[:space:]]*0x00c00000" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "exynos990_ufs_drvs has iocc_mask = UFS_EXYNOS990_SHARABLE" \
@@ -2568,6 +2583,26 @@ check "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR absent from exynos990_ufs_drvs" \
 	sh -c '! (grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "exynos990_ufs_drvs post_link and pre_pwr_change absent" \
 	sh -c '! (grep -A 20 "exynos990_ufs_drvs" "$1" | grep -E -q "\.(post_link|pre_pwr_change)")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+
+# Negative control for set_dma_mask callback wired in ufs_hba_exynos_ops
+_neg_dma_cb=$(mktemp)
+grep -A 15 "ufs_hba_exynos_ops" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "set_dma_mask" > "${_neg_dma_cb}"
+if grep -q "set_dma_mask" "${_neg_dma_cb}"; then
+	bad "set_dma_mask callback negative control failed: pattern unexpectedly matched"
+else
+	ok "set_dma_mask callback negative control: missing callback is detected (gate is sensitive)"
+fi
+rm -f "${_neg_dma_cb}"
+
+# Negative control for UFS DMA mask 32 log
+_neg_dma_log=$(mktemp)
+grep -A 10 "exynos_ufs_set_dma_mask" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "UFS DMA mask 32" > "${_neg_dma_log}"
+if grep -q "UFS DMA mask 32" "${_neg_dma_log}"; then
+	bad "UFS DMA mask 32 log negative control failed: pattern unexpectedly matched"
+else
+	ok "UFS DMA mask 32 log negative control: missing log string is detected (gate is sensitive)"
+fi
+rm -f "${_neg_dma_log}"
 
 # Negative control for limit-hs-gear in DTB
 if fdtget "${DTB}" /soc@0/ufs@13100000 non_existent_dummy_gear >/dev/null 2>&1; then

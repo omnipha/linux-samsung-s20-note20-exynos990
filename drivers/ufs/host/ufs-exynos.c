@@ -13,6 +13,7 @@
 #include <linux/arm-smccc.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -2022,10 +2023,25 @@ static int gs101_ufs_pre_pwr_change(struct exynos_ufs *ufs,
 	return 0;
 }
 
+static int exynos_ufs_set_dma_mask(struct ufs_hba *hba)
+{
+	if (of_device_is_compatible(hba->dev->of_node, "samsung,exynos990-ufs")) {
+		dev_info(hba->dev, "UFS DMA mask 32\n");
+		return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32));
+	}
+
+	if (hba->capabilities & MASK_64_ADDRESSING_SUPPORT) {
+		if (!dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(64)))
+			return 0;
+	}
+	return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32));
+}
+
 static const struct ufs_hba_variant_ops ufs_hba_exynos_ops = {
 	.name				= "exynos_ufs",
 	.init				= exynos_ufs_init,
 	.exit				= exynos_ufs_exit,
+	.set_dma_mask			= exynos_ufs_set_dma_mask,
 	.hce_enable_notify		= exynos_ufs_hce_enable_notify,
 	.link_startup_notify		= exynos_ufs_link_startup_notify,
 	.negotiate_pwr_mode		= exynos_ufs_negotiate_pwr_mode,

@@ -2275,5 +2275,42 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * Gate: `exynos990_ufs_drvs` has `iocc_mask = UFS_EXYNOS990_SHARABLE`.
 * Negative controls verified for all gates.
 
+### Device Test Result (diag22c)
+FAILED (measured 22:23-22:25, rescue mode, SSH, dd read 6 GiB of sda32): link was `FAST G_3 L_2` (gear cap worked), but `saved_err 0x20000` (`SYSTEM_BUS_FATAL_ERROR`) still occurred at ~8 s into the read (uptime 58.9 s, OCS invalid tag 19/20). Gear, quirks, and coherency alone do not resolve the bus fatal error. Device log: `~/phone-second-life-data/mb008/diagnostics/diag22c-memory.txt`.
+Key discovery: System RAM map spans `0x80000000-0xffffffff` (DMA zone) AND `0x880000000-0xaffffffff` (high memory above 4 GiB, ~10 GiB total). UFSHCI capabilities claim 64-bit addressing (`MASK_64_ADDRESSING_SUPPORT`), so the kernel issues 64-bit DMA descriptors for buffers in the >4 GiB range. On Exynos 990, DMA transactions targeting physical addresses above 4 GiB trigger AXI bus fatal errors (`SYSTEM_BUS_FATAL_ERROR 0x20000`).
+
+---
+
+## Candidate diag22d (Issue #20): Force 32-bit UFS DMA Mask with SWIOTLB Bounce Buffers
+
+### Objective
+Force the UFS controller DMA mask to 32 bits (`dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32))`) for `samsung,exynos990-ufs` via `hba->vops->set_dma_mask`, ensuring all DMA buffers reside in the low 4 GiB address space and SWIOTLB bounces buffers allocated above 4 GiB:
+1. In `drivers/ufs/host/ufs-exynos.c`, implement `exynos_ufs_set_dma_mask()` and wire it into `ufs_hba_exynos_ops.set_dma_mask`. Log `UFS DMA mask 32` via `dev_info` upon execution.
+2. Confirm `CONFIG_SWIOTLB=y` in kernel configuration (explicitly set in `arch/arm64/configs/c2s_rescue_defconfig`).
+3. Retain HS Gear 3 capping (`limit-hs-gear = <3>`, `exynos_ufs_get_hs_gear()`), stock-matching IO coherency (`dma-coherent`, `iocc_mask = 0x00c00000`), and rescue boot menu default.
+
+### Artifacts (build host, `/tmp/opencode/c2s-diag22d-out`)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `boot.img` (diag22d, signed) | 61,865,984 B | `6e45a0f0b22a0f8b27cce83cdf889910ff47e2222f0fc793fd8afe6a3dc5bba2` |
+| `Image` (diag22d) | 14,961,152 B | `0176b8f5caf8a96344dea7d79b4427c4db5fa6757fe79ad080f034b96a71dcb2` |
+| `DTB` | 149,168 B | `403c0a6e68b1dd19c1ff2a4a203d644171da3e7a48c7b9104aa4e932d8e35a1a` |
+| `initramfs` | 3,375,015 B | `70ee2acf56b046bcda89e697f26c0fbdbfaa8f55ba67d13f18efe456056fd1ab` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 149,168 B == kbuild DTB.
+
+### Verification
+* `verify.sh`: **436 passed, 0 failed**.
+* Gate: `set_dma_mask` callback wired in `ufs_hba_exynos_ops`.
+* Gate: `exynos_ufs_set_dma_mask` sets 32-bit DMA mask and logs `UFS DMA mask 32`.
+* Gate: `CONFIG_SWIOTLB=y` verified in kernel configuration.
+* Gate: `limit-hs-gear` property present in `ufs_0` node and equals 3.
+* Gate: `exynos_ufs_get_hs_gear` caps exynos990 to `UFS_HS_G3`.
+* Gate: `dma-coherent` property present in `ufs_0` node.
+* Gate: `UFS_EXYNOS990_SHARABLE` defined as `0x00c00000`.
+* Gate: `exynos990_ufs_drvs` has `iocc_mask = UFS_EXYNOS990_SHARABLE`.
+* Negative controls verified for all gates.
+
 
 
