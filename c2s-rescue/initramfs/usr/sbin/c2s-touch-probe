@@ -1,0 +1,114 @@
+#!/bin/sh
+# /usr/sbin/c2s-touch-probe: safe, read-only diagnostic for s6sy761 touch and S2DOS05 regulators
+set -u
+
+echo "============================================================"
+echo "c2s Touch Subsystem Probe"
+echo "============================================================"
+
+echo "--- 1. Kernel Messages (Touch, Regulators, I2C) ---"
+dmesg | grep -Ei "s6sy761|s2dos05|108d0000|10590000|touchscreen|tsp|input" || echo "No matching dmesg entries"
+
+echo ""
+echo "--- 2. Interrupt Statistics (/proc/interrupts) ---"
+if [ -f /proc/interrupts ]; then
+    grep -E "s6sy761|108d0000|10590000|gpa1" /proc/interrupts || echo "No touch interrupts registered yet"
+else
+    echo "/proc/interrupts not available"
+fi
+
+echo ""
+echo "--- 3. Regulator States ---"
+if [ -d /sys/class/regulator ]; then
+    for r in /sys/class/regulator/*; do
+        if [ -d "$r" ]; then
+            rname=$(cat "$r/name" 2>/dev/null || basename "$r")
+            case "$rname" in
+                *tsp*|*s2dos05*|*ldo2*|*ldo3*|*buck1*|*dummy*)
+                    state=$(cat "$r/state" 2>/dev/null || echo "unknown")
+                    microvolt=$(cat "$r/microvolts" 2>/dev/null || echo "unknown")
+                    echo "  $rname: state=$state voltage=${microvolt}uV"
+                    ;;
+            esac
+        fi
+    done
+else
+    echo "/sys/class/regulator not available"
+fi
+
+echo ""
+echo "--- 4. GPIO Debugfs ---"
+if [ -f /sys/kernel/debug/gpio ]; then
+    grep -E "gpa1|touch|attn" /sys/kernel/debug/gpio || echo "No gpa1/attn entries in debugfs gpio"
+elif mount -t debugfs none /sys/kernel/debug 2>/dev/null; then
+    if [ -f /sys/kernel/debug/gpio ]; then
+        grep -E "gpa1|touch|attn" /sys/kernel/debug/gpio || echo "No gpa1/attn entries in debugfs gpio"
+    else
+        echo "debugfs mounted but /sys/kernel/debug/gpio not found"
+    fi
+    umount /sys/kernel/debug 2>/dev/null || true
+else
+    echo "debugfs not mounted/available"
+fi
+
+echo ""
+echo "--- 5. I2C Buses & Devices ---"
+if [ -d /sys/class/i2c-dev ]; then
+    ls -l /sys/class/i2c-dev/ 2>/dev/null || true
+fi
+for bus_dir in /sys/bus/i2c/devices/*; do
+    if [ -d "$bus_dir" ]; then
+        bname=$(basename "$bus_dir")
+        drv=$(readlink "$bus_dir/driver" 2>/dev/null || echo "none")
+        drv=$(basename "$drv")
+        echo "  i2c device $bname (driver: $drv)"
+    fi
+done
+
+if command -v i2cdetect >/dev/null 2>&1; then
+    echo "i2cdetect scans:"
+    for dev in /dev/i2c-*; do
+        if [ -e "$dev" ]; then
+            n="${dev#/dev/i2c-}"
+            echo "Bus $n:"
+            i2cdetect -y -r "$n" 2>/dev/null || true
+        fi
+    done
+elif busybox i2cdetect -l >/dev/null 2>&1; then
+    echo "busybox i2cdetect scans:"
+    for dev in /dev/i2c-*; do
+        if [ -e "$dev" ]; then
+            n="${dev#/dev/i2c-}"
+            echo "Bus $n:"
+            busybox i2cdetect -y -r "$n" 2>/dev/null || true
+        fi
+    done
+fi
+
+echo ""
+echo "--- 6. Input Devices (/sys/class/input) ---"
+if [ -d /sys/class/input ]; then
+    for inp in /sys/class/input/input*; do
+        if [ -d "$inp" ]; then
+            iname=$(cat "$inp/name" 2>/dev/null || echo "unnamed")
+            echo "  $inp: $iname"
+            if [ -d "$inp/capabilities" ]; then
+                echo "    abs: $(cat "$inp/capabilities/abs" 2>/dev/null || true)"
+                echo "    ev:  $(cat "$inp/capabilities/ev" 2>/dev/null || true)"
+            fi
+        fi
+    done
+fi
+
+echo ""
+echo "--- 7. Input Event Device Check ---"
+for ev in /dev/input/event*; do
+    if [ -e "$ev" ]; then
+        echo "Found $ev"
+    fi
+done
+
+echo "============================================================"
+echo "End of Touch Probe"
+echo "============================================================"
+exit 0

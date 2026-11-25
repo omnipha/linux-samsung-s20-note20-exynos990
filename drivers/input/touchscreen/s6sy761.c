@@ -242,6 +242,9 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 	if (unlikely(n_events > S6SY761_EVENT_COUNT - 1))
 		return IRQ_HANDLED;
 
+	dev_dbg(&sdata->client->dev, "touch irq: status=0x%02x events_left=%u\n",
+		sdata->data[0], n_events);
+
 	if (n_events) {
 		ret = s6sy761_read_events(sdata, n_events);
 		if (ret < 0) {
@@ -258,8 +261,11 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 static int s6sy761_input_open(struct input_dev *dev)
 {
 	struct s6sy761_data *sdata = input_get_drvdata(dev);
+	int ret;
 
-	return i2c_smbus_write_byte(sdata->client, S6SY761_SENSE_ON);
+	ret = i2c_smbus_write_byte(sdata->client, S6SY761_SENSE_ON);
+	dev_info(&sdata->client->dev, "input_open: sensing ON (ret=%d)\n", ret);
+	return ret;
 }
 
 static void s6sy761_input_close(struct input_dev *dev)
@@ -269,7 +275,9 @@ static void s6sy761_input_close(struct input_dev *dev)
 
 	ret = i2c_smbus_write_byte(sdata->client, S6SY761_SENSE_OFF);
 	if (ret)
-		dev_err(&sdata->client->dev, "failed to turn off sensing\n");
+		dev_err(&sdata->client->dev, "failed to turn off sensing: %d\n", ret);
+	else
+		dev_info(&sdata->client->dev, "input_close: sensing OFF\n");
 }
 
 static ssize_t s6sy761_sysfs_devid(struct device *dev,
@@ -332,6 +340,13 @@ static int s6sy761_power_on(struct s6sy761_data *sdata)
 	if (ret)
 		return ret;
 
+	/* Turn on sensing at power-on so touch interrupts can fire immediately */
+	ret = i2c_smbus_write_byte(sdata->client, S6SY761_SENSE_ON);
+	if (ret)
+		dev_warn(&sdata->client->dev, "failed to enable sensing at boot: %d\n", ret);
+	else
+		dev_info(&sdata->client->dev, "sensing enabled at power-on\n");
+
 	return 0;
 }
 
@@ -373,6 +388,10 @@ static int s6sy761_hw_init(struct s6sy761_data *sdata,
 		return ret;
 	else if (ret != S6SY761_FW_OK)
 		return -ENODEV;
+
+	dev_info(&sdata->client->dev,
+		 "hw_init: devid=0x%04x panel %ux%u tx_channels=%u\n",
+		 sdata->devid, *max_x, *max_y, sdata->tx_channel);
 
 	return 0;
 }
@@ -429,19 +448,27 @@ static int s6sy761_probe(struct i2c_client *client)
 	sdata->input->open = s6sy761_input_open;
 	sdata->input->close = s6sy761_input_close;
 
+	input_set_abs_params(sdata->input, ABS_X, 0, max_x, 0, 0);
+	input_set_abs_params(sdata->input, ABS_Y, 0, max_y, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_POSITION_X, 0, max_x, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_POSITION_Y, 0, max_y, 0, 0);
-	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
-	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MINOR, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MINOR, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_PRESSURE, 0, 255, 0, 0);
 
 	touchscreen_parse_properties(sdata->input, true, &sdata->prop);
+	touchscreen_parse_properties(sdata->input, false, &sdata->prop);
 
 	if (!input_abs_get_max(sdata->input, ABS_X) ||
 	    !input_abs_get_max(sdata->input, ABS_Y)) {
 		dev_warn(&client->dev, "the axis have not been set\n");
+	} else {
+		dev_info(&client->dev,
+			 "axes configured: X 0..%d, Y 0..%d (MT X 0..%d, MT Y 0..%d)\n",
+			 input_abs_get_max(sdata->input, ABS_X),
+			 input_abs_get_max(sdata->input, ABS_Y),
+			 input_abs_get_max(sdata->input, ABS_MT_POSITION_X),
+			 input_abs_get_max(sdata->input, ABS_MT_POSITION_Y));
 	}
 
 	err = input_mt_init_slots(sdata->input, sdata->tx_channel,

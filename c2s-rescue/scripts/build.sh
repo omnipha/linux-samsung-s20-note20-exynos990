@@ -268,6 +268,8 @@ cp "${RESCUE_DIR}/initramfs/usr/sbin/c2s-flash-boot" "${ROOT}/usr/sbin/c2s-flash
 chmod 0755 "${ROOT}/usr/sbin/c2s-flash-boot"
 cp "${RESCUE_DIR}/initramfs/usr/sbin/c2s-reboot-recovery" "${ROOT}/usr/sbin/c2s-reboot-recovery"
 chmod 0755 "${ROOT}/usr/sbin/c2s-reboot-recovery"
+cp "${RESCUE_DIR}/initramfs/usr/sbin/c2s-touch-probe" "${ROOT}/usr/sbin/c2s-touch-probe"
+chmod 0755 "${ROOT}/usr/sbin/c2s-touch-probe"
 chmod 0644 "${ROOT}/etc/rescue.conf" "${ROOT}/etc/issue" "${ROOT}/etc/shells"
 
 # sudo-rs and its runtime libraries (passwordless sudo for the SSH login
@@ -373,6 +375,7 @@ LIST="${WORK}/cpio.list"
 	echo "file /usr/sbin/c2s-blockmap ${ROOT}/usr/sbin/c2s-blockmap 0755 0 0"
 	echo "file /usr/sbin/c2s-flash-boot ${ROOT}/usr/sbin/c2s-flash-boot 0755 0 0"
 	echo "file /usr/sbin/c2s-reboot-recovery ${ROOT}/usr/sbin/c2s-reboot-recovery 0755 0 0"
+	echo "file /usr/sbin/c2s-touch-probe ${ROOT}/usr/sbin/c2s-touch-probe 0755 0 0"
 	echo "file /usr/lib/c2s-gadget.sh ${ROOT}/usr/lib/c2s-gadget.sh 0644 0 0"
 	# sudo-rs + runtime.  04755 on /usr/bin/sudo: sudo-rs refuses to load
 	# a sudo binary that is not owned by uid 0 *with* the setuid bit.

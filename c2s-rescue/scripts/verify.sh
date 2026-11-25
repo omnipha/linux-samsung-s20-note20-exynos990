@@ -147,6 +147,19 @@ if printf '%s\n' "${_neg_s6sy761_out}" | grep -q "FAIL: CONFIG_TOUCHSCREEN_S6SY7
 else
 	bad "CONFIG_TOUCHSCREEN_S6SY761 negative control failed: ${_neg_s6sy761_out}"
 fi
+check "CONFIG_DYNAMIC_DEBUG=y" \
+	require_cfg DYNAMIC_DEBUG y
+# Negative control for CONFIG_DYNAMIC_DEBUG gate:
+_neg_dyndbg_cfg=$(mktemp)
+grep -v "^CONFIG_DYNAMIC_DEBUG=" "${CONFIG}" > "${_neg_dyndbg_cfg}"
+echo "# CONFIG_DYNAMIC_DEBUG is not set" >> "${_neg_dyndbg_cfg}"
+_neg_dyndbg_out=$(CONFIG="${_neg_dyndbg_cfg}" require_cfg DYNAMIC_DEBUG y)
+rm -f "${_neg_dyndbg_cfg}"
+if printf '%s\n' "${_neg_dyndbg_out}" | grep -q "FAIL: CONFIG_DYNAMIC_DEBUG"; then
+	ok "CONFIG_DYNAMIC_DEBUG negative control: unset symbol is rejected (gate is sensitive)"
+else
+	bad "CONFIG_DYNAMIC_DEBUG negative control failed: ${_neg_dyndbg_out}"
+fi
 if grep -q "^CONFIG_FB_SIMPLE=y" "${CONFIG}" 2> /dev/null; then
 	bad "CONFIG_FB_SIMPLE=y (should be superseded by DRM_SIMPLEDRM)"
 else
@@ -1222,6 +1235,7 @@ fi
 section "storage tools (issue #5, diag15)"
 check "/usr/sbin/c2s-blockmap present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-blockmap"
 check "/usr/sbin/c2s-flash-boot present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-flash-boot"
+check "/usr/sbin/c2s-touch-probe present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-touch-probe"
 
 BM_ENTRY=$(CPIO_ENTRY "usr/sbin/c2s-blockmap")
 if [ -n "${BM_ENTRY}" ]; then
@@ -1260,6 +1274,35 @@ if [ -n "${FB_ENTRY}" ]; then
 else
 	bad "archive missing /usr/sbin/c2s-flash-boot"
 fi
+
+TP_ENTRY=$(CPIO_ENTRY "usr/sbin/c2s-touch-probe")
+if [ -n "${TP_ENTRY}" ]; then
+	ok "archive carries /usr/sbin/c2s-touch-probe: ${TP_ENTRY}"
+	TP_UID=$(printf '%s\n' "${TP_ENTRY}" | awk '{print $2}')
+	TP_GID=$(printf '%s\n' "${TP_ENTRY}" | awk '{print $3}')
+	if [ "${TP_UID}" = "0" ] && [ "${TP_GID}" = "0" ]; then
+		ok "archive /usr/sbin/c2s-touch-probe is root-owned (uid 0 gid 0)"
+	else
+		bad "archive /usr/sbin/c2s-touch-probe is not root-owned (uid=${TP_UID} gid=${TP_GID})"
+	fi
+	if printf '%s\n' "${TP_ENTRY}" | grep -qE '^100755 '; then
+		ok "archive /usr/sbin/c2s-touch-probe is executable (mode 0755)"
+	else
+		bad "archive /usr/sbin/c2s-touch-probe is not executable mode 0755: ${TP_ENTRY}"
+	fi
+else
+	bad "archive missing /usr/sbin/c2s-touch-probe"
+fi
+# Negative control for c2s-touch-probe
+_neg_tp_root=$(mktemp -d)
+cp -a "${UNPACK}"/* "${_neg_tp_root}/" 2>/dev/null || true
+rm -f "${_neg_tp_root}/usr/sbin/c2s-touch-probe"
+if [ ! -f "${_neg_tp_root}/usr/sbin/c2s-touch-probe" ]; then
+	ok "c2s-touch-probe negative control: missing binary detected"
+else
+	bad "c2s-touch-probe negative control failed"
+fi
+rm -rf "${_neg_tp_root}"
 
 # Verify busybox symlinks for storage utilities
 for a in sha256sum readlink basename sync blockdev df wc; do
@@ -2030,6 +2073,12 @@ check "s2dos05 pmic present" \
 	grep -q "samsung,s2dos05" "${DTB_TXT}"
 check "touchscreen s6sy761 present" \
 	grep -q "samsung,s6sy761" "${DTB_TXT}"
+check "touchscreen has pinctrl-0" \
+	grep -q "attn-irq" "${DTB_TXT}"
+check "touchscreen has touchscreen-size-x" \
+	grep -q "touchscreen-size-x" "${DTB_TXT}"
+check "touchscreen has touchscreen-size-y" \
+	grep -q "touchscreen-size-y" "${DTB_TXT}"
 check "framebuffer0 has memory-region" \
 	grep -q "memory-region" "${DTB_TXT}"
 check "pd_g3d power domain present" \
@@ -2085,6 +2134,24 @@ else
 	ok "DT touch negative control: missing s6sy761 node is detected (gate is sensitive)"
 fi
 rm -f "${_neg_touch_dts}"
+# Negative control for Touch pinctrl gate: prove missing attn-irq is detected
+_neg_touch_pinctrl_dts=$(mktemp)
+grep -v "attn-irq" "${DTB_TXT}" > "${_neg_touch_pinctrl_dts}"
+if grep -q "attn-irq" "${_neg_touch_pinctrl_dts}"; then
+	bad "DT touch pinctrl negative control failed: pattern unexpectedly matched"
+else
+	ok "DT touch pinctrl negative control: missing attn-irq pinctrl is detected (gate is sensitive)"
+fi
+rm -f "${_neg_touch_pinctrl_dts}"
+# Negative control for Touch axis size gate: prove missing touchscreen-size-x is detected
+_neg_touch_size_dts=$(mktemp)
+grep -v "touchscreen-size-x" "${DTB_TXT}" > "${_neg_touch_size_dts}"
+if grep -q "touchscreen-size-x" "${_neg_touch_size_dts}"; then
+	bad "DT touch size negative control failed: pattern unexpectedly matched"
+else
+	ok "DT touch size negative control: missing touchscreen-size-x is detected (gate is sensitive)"
+fi
+rm -f "${_neg_touch_size_dts}"
 # Last region: 5 x <0x8.. 0x80000000> 2 GiB chunks -> ends at 0xb00000000.
 # (#size-cells=1 caps each entry at 4 GiB, so the 10 GiB region is split.)
 check "memory highmem split 0x880000000..0xb00000000 present" \

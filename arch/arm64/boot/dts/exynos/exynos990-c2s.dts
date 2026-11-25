@@ -177,6 +177,13 @@
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
 	};
+
+	attn_irq: attn-irq-pins {
+		samsung,pins = "gpa1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
 };
 
 &usbdrd {
@@ -276,4 +283,9 @@
 
 &ufs_0_phy {
 	status = "okay";
+};
+
+&touchscreen {
+	pinctrl-names = "default";
+	pinctrl-0 = <&attn_irq>;
 };

@@ -638,7 +638,7 @@
 				pinctrl-0 = <&hsi2c15_bus>;
 				status = "okay";
 
-				touchscreen@48 {
+				touchscreen: touchscreen@48 {
 					compatible = "samsung,s6sy761";
 					reg = <0x48>;
 					interrupt-parent = <&gpa1>;
