@@ -71,7 +71,8 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
          IKCONFIG IKCONFIG_PROC PRINTK_TIME \
          SCSI BLK_DEV_SD SCSI_UFSHCD SCSI_UFSHCD_PLATFORM SCSI_UFS_EXYNOS \
          PHY_SAMSUNG_UFS EFI_PARTITION PARTITION_ADVANCED POWER_RESET \
-         REBOOT_MODE SYSCON_REBOOT_MODE; do
+         REBOOT_MODE SYSCON_REBOOT_MODE \
+         MAILBOX EXYNOS_MBOX EXYNOS_ACPM_PROTOCOL REGULATOR_S2MPS19_ACPM; do
 	require_cfg "$s" y
 done
 # Negative control for CONFIG_UNIX gate: prove that an unset CONFIG_UNIX
@@ -98,6 +99,28 @@ if printf '%s\n' "${_neg_scsi_out}" | grep -q "FAIL: CONFIG_SCSI"; then
 	ok "CONFIG_SCSI negative control: unset CONFIG_SCSI is rejected (gate is sensitive)"
 else
 	bad "CONFIG_SCSI negative control failed: unset CONFIG_SCSI was not rejected: ${_neg_scsi_out}"
+fi
+# Negative control for CONFIG_EXYNOS_ACPM_PROTOCOL gate:
+_neg_acpm_cfg=$(mktemp)
+grep -v "^CONFIG_EXYNOS_ACPM_PROTOCOL=" "${CONFIG}" > "${_neg_acpm_cfg}"
+echo "# CONFIG_EXYNOS_ACPM_PROTOCOL is not set" >> "${_neg_acpm_cfg}"
+_neg_acpm_out=$(CONFIG="${_neg_acpm_cfg}" require_cfg EXYNOS_ACPM_PROTOCOL y)
+rm -f "${_neg_acpm_cfg}"
+if printf '%s\n' "${_neg_acpm_out}" | grep -q "FAIL: CONFIG_EXYNOS_ACPM_PROTOCOL"; then
+	ok "CONFIG_EXYNOS_ACPM_PROTOCOL negative control: unset symbol is rejected (gate is sensitive)"
+else
+	bad "CONFIG_EXYNOS_ACPM_PROTOCOL negative control failed: ${_neg_acpm_out}"
+fi
+# Negative control for CONFIG_REGULATOR_S2MPS19_ACPM gate:
+_neg_s2mps19_cfg=$(mktemp)
+grep -v "^CONFIG_REGULATOR_S2MPS19_ACPM=" "${CONFIG}" > "${_neg_s2mps19_cfg}"
+echo "# CONFIG_REGULATOR_S2MPS19_ACPM is not set" >> "${_neg_s2mps19_cfg}"
+_neg_s2mps19_out=$(CONFIG="${_neg_s2mps19_cfg}" require_cfg REGULATOR_S2MPS19_ACPM y)
+rm -f "${_neg_s2mps19_cfg}"
+if printf '%s\n' "${_neg_s2mps19_out}" | grep -q "FAIL: CONFIG_REGULATOR_S2MPS19_ACPM"; then
+	ok "CONFIG_REGULATOR_S2MPS19_ACPM negative control: unset symbol is rejected (gate is sensitive)"
+else
+	bad "CONFIG_REGULATOR_S2MPS19_ACPM negative control failed: ${_neg_s2mps19_out}"
 fi
 require_cfg CMDLINE_FORCE y
 require_cfg PANIC_TIMEOUT 0
@@ -1939,6 +1962,23 @@ check "ufs_0_phy compatible is exynos990-ufs-phy" \
 	grep -q "samsung,exynos990-ufs-phy" "${DTB_TXT}"
 check "ufs_vcc_reg regulator present" \
 	grep -q "regulator-ufs-vcc" "${DTB_TXT}"
+check "mailbox@15900000 enabled" \
+	grep -q "mailbox@15900000" "${DTB_TXT}"
+check "mailbox compatible is exynos990-mbox" \
+	grep -q "samsung,exynos990-mbox" "${DTB_TXT}"
+check "acpm compatible is exynos990-acpm-ipc" \
+	grep -q "samsung,exynos990-acpm-ipc" "${DTB_TXT}"
+check "s2mps19 acpm regulators present" \
+	grep -q "samsung,s2mps19-acpm-regulator" "${DTB_TXT}"
+# Negative control for ACPM DT gate: prove missing acpm-ipc is detected
+_neg_acpm_dts=$(mktemp)
+grep -v "samsung,exynos990-acpm-ipc" "${DTB_TXT}" > "${_neg_acpm_dts}"
+if grep -q "samsung,exynos990-acpm-ipc" "${_neg_acpm_dts}"; then
+	bad "DT ACPM negative control failed: pattern unexpectedly matched"
+else
+	ok "DT ACPM negative control: missing acpm-ipc node is detected (gate is sensitive)"
+fi
+rm -f "${_neg_acpm_dts}"
 # Last region: 5 x <0x8.. 0x80000000> 2 GiB chunks -> ends at 0xb00000000.
 # (#size-cells=1 caps each entry at 4 GiB, so the 10 GiB region is split.)
 check "memory highmem split 0x880000000..0xb00000000 present" \

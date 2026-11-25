@@ -31,14 +31,41 @@
 
 #define EXYNOS_MBOX_CHAN_COUNT		HWEIGHT32(EXYNOS_MBOX_INTGR1_MASK)
 
+/*
+ * The AP->APM doorbell register and its encoding differ per SoC.
+ * gs101:     write BIT(chan_id)       to INTGR1 (0x40); mask INTMR0 at 0x28.
+ * exynos990: write BIT(chan_id) << 16 to INTGR0 (0x08); mask INTMR0 at 0x10.
+ */
+struct exynos_mbox_data {
+	u32 intmr0;
+	u32 intmr1;
+	u32 doorbell_reg;
+	u32 doorbell_shift;
+};
+
+static const struct exynos_mbox_data gs101_mbox_data = {
+	.intmr0		= 0x28,
+	.doorbell_reg	= 0x40,
+	.doorbell_shift	= 0,
+};
+
+static const struct exynos_mbox_data exynos990_mbox_data = {
+	.intmr0		= 0x10,
+	.intmr1		= 0x24,
+	.doorbell_reg	= 0x08,
+	.doorbell_shift	= 16,
+};
+
 /**
  * struct exynos_mbox - driver's private data.
  * @regs:	mailbox registers base address.
  * @mbox:	pointer to the mailbox controller.
+ * @data:	per-SoC match data.
  */
 struct exynos_mbox {
 	void __iomem *regs;
 	struct mbox_controller *mbox;
+	const struct exynos_mbox_data *data;
 };
 
 static int exynos_mbox_send_data(struct mbox_chan *chan, void *data)
@@ -57,7 +84,8 @@ static int exynos_mbox_send_data(struct mbox_chan *chan, void *data)
 		return -EINVAL;
 	}
 
-	writel(BIT(msg->chan_id), exynos_mbox->regs + EXYNOS_MBOX_INTGR1);
+	writel(BIT(msg->chan_id) << exynos_mbox->data->doorbell_shift,
+	       exynos_mbox->regs + exynos_mbox->data->doorbell_reg);
 
 	return 0;
 }
@@ -87,7 +115,8 @@ static struct mbox_chan *exynos_mbox_of_xlate(struct mbox_controller *mbox,
 }
 
 static const struct of_device_id exynos_mbox_match[] = {
-	{ .compatible = "google,gs101-mbox" },
+	{ .compatible = "google,gs101-mbox", .data = &gs101_mbox_data },
+	{ .compatible = "samsung,exynos990-mbox", .data = &exynos990_mbox_data },
 	{},
 };
 MODULE_DEVICE_TABLE(of, exynos_mbox_match);
@@ -103,6 +132,10 @@ static int exynos_mbox_probe(struct platform_device *pdev)
 	exynos_mbox = devm_kzalloc(dev, sizeof(*exynos_mbox), GFP_KERNEL);
 	if (!exynos_mbox)
 		return -ENOMEM;
+
+	exynos_mbox->data = of_device_get_match_data(dev);
+	if (!exynos_mbox->data)
+		return dev_err_probe(dev, -EINVAL, "No match data.\n");
 
 	mbox = devm_kzalloc(dev, sizeof(*mbox), GFP_KERNEL);
 	if (!mbox)
@@ -133,7 +166,11 @@ static int exynos_mbox_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, exynos_mbox);
 
 	/* Mask out all interrupts. We support just polling channels for now. */
-	writel(EXYNOS_MBOX_INTMR0_MASK, exynos_mbox->regs + EXYNOS_MBOX_INTMR0);
+	writel(EXYNOS_MBOX_INTMR0_MASK,
+	       exynos_mbox->regs + exynos_mbox->data->intmr0);
+	if (exynos_mbox->data->intmr1)
+		writel(EXYNOS_MBOX_INTMR0_MASK,
+		       exynos_mbox->regs + exynos_mbox->data->intmr1);
 
 	return devm_mbox_controller_register(dev, mbox);
 }
