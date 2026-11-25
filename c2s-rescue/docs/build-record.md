@@ -2035,3 +2035,34 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * `S2MPS19_REG_PMICID` negative control: missing definition rejected.
 * `evidence.md` PMIC documentation negative control: missing documentation rejected.
 * `check-platform-device-collisions.py`: **0 name collisions across all 9 merged DTBs**.
+
+### Hardware Measurements (diag19 on c2s, Package 3)
+
+* **Flash & Boot Recovery**:
+  - Pre-flash backup: `~/phone-second-life-data/mb008/backups/2026-11-25-1309-pre-diag19/boot-pre.img` (sha256 `8276b052977aa439de2173e7fbdd8b7ca768e1d7528fe6be7b4e5000904840a0`, host == device).
+  - Image flashed: `/run/diag19-boot.img` sha256 `ee450e7348b48be712aa7844bb820ed0840d48cfeb2c4451b1bbc285424e31c3`.
+  - `/usr/sbin/c2s-flash-boot /run/diag19-boot.img ee450e73...`: OK (rc=0).
+  - Recovery hash unchanged: `4d5f4b584a30a490a4235ad5d19fb8a4f4662193db88b10c6efce66c49d34982`.
+  - Reboot via `busybox reboot -f`: USB gadget (`1d6b:0104`) re-enumerated, host IP set on `enxaa6f4b34bcd0` (`192.168.42.2/24`), SSH restored.
+* **Test (a) Kernel & Identity**:
+  - `uname -r`: `7.1.0-rc4-c2s-rescue`.
+  - Boot partition hash: `ee450e7348b48be712aa7844bb820ed0840d48cfeb2c4451b1bbc285424e31c3` (diag19 verified).
+  - `sudo -n /bin/id` as rescue: `uid=0(root) gid=0(root) groups=0(root)`.
+  - dmesg errors: 0 Oops, 0 panic, 0 BUG, 0 WARNING.
+* **Test (b) ACPM & Regulators (#19)**:
+  - ACPMTEST log: `exynos990-pmic-probe firmware:power-management:pmic-probe: ACPMTEST: OK chipid=0x00`, `LDO2(vqmmc)=0x2c LDO15(vmmc)=0x2e (en=bits7:6, 0xC0=on)`.
+  - Chip ID: register offset `0x00` (`S2MPS19_REG_PMICID`) confirmed on hardware; proves AP -> mailbox -> APM -> SPEEDY -> S2MPS19 path end-to-end.
+  - Regulators: `ufs-vcc` enabled; `tsp_io` enabled (1.8V); `tsp_avdd` enabled (3.0V); `s_vdd_buck1` (800mV); `vqmmc`, `vmmc`, `VDD_WIFI_0P95`, `wacom_avdd` disabled.
+* **Test (c) GPU Subsystem (#18)**:
+  - `c2s-gpu-probe`: Mali-G77 (id `0x9080`), clock rate 800MHz, Panfrost 1.6.0 on minor 1.
+  - Panfrost dmesg: dummy regulator message eliminated; supply linked to `s_vdd_buck1`.
+  - Devfreq (`18500000.gpu`): `cur_freq=156000000`, `governor=simple_ondemand`, available frequencies: 156, 260, 377, 455, 572, 702, 800, 832 MHz.
+  - DRM nodes: `/dev/dri/card0` (simpledrm), `/dev/dri/card1` (panfrost), `/dev/dri/renderD128` (panfrost, major 226, minor 128).
+  - Render proof blocker: Missing arm64 userspace Mesa/kmscube/vulkaninfo binaries and shared libraries in rescue initramfs.
+* **Test (d) Touch Subsystem (#17)**:
+  - `c2s-touch-probe`: S2DOS05 (EN=0x19); s6sy761 (devid=0x79a1, axes X 0..1439, Y 0..3087 configured, "axis have not been set" warning gone).
+  - Input device: `/dev/input/event0` (`s6sy761`).
+  - Interrupt count: `67: 2 ... gpa1 0 Level s6sy761_irq`.
+  - Runtime status: `suspended` when idle; switches to `sensing ON (ret=0)` on `event0` open.
+  - 20-second event0 capture: 0 events received, X/Y no coordinates recorded (idle baseline, IRQ count stays 2 without physical touch).
+  - Touch event blocker: Human touch interaction required on physical panel for live coordinate generation; request logged to `/tmp/c2s-worker-needs-human.txt`.

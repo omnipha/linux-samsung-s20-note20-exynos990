@@ -331,3 +331,4 @@ the coordinator's hardware run.
 
 Stage A (diag17, issues #13, #12): ACPM mailbox + S2MPS19 PMIC regulators and S2DOS05 + s6sy761 touch ported; 337/337 host gates passed.
 Stage B (diag18, issues #9, #10): DRM/KMS simpledrm (card0) and Panfrost Mali-G77 GPU ported; 351/351 host gates passed.
+Stage C (diag19, issues #17, #18, #19, #16): Flashed and booted on hardware over SSH via c2s-flash-boot; panfrost dummy supply resolved, mali-supply linked to s_vdd_buck1 (devfreq 156-832 MHz), s6sy761 touch axes configured (1440x3088), sensing enabled, ACPM chipid=0x00 verified; 380/380 host gates passed.
