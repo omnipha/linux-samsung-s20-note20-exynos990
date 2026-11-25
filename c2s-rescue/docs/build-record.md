@@ -2209,4 +2209,37 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * Gate: `exynos990_ufs_drvs` post_link and pre_pwr_change absent.
 * Negative controls verified for all 4 gates.
 
+---
+
+## Candidate diag22b (Issue #20): Stock-Matching IO Coherency + Rescue Boot Menu Default
+
+### Objective
+Resolve UFS `SYSTEM_BUS_FATAL_ERROR (0x20000)` during sustained I/O by matching stock Samsung kernel 4.19 IO coherency configuration:
+1. Add `dma-coherent;` property to DT node `ufs_0: ufs@13100000` in `arch/arm64/boot/dts/exynos/exynos990.dtsi`.
+2. Define `#define UFS_EXYNOS990_SHARABLE 0x00c00000` (bits 22 and 23 of `sysreg_hsi1 + 0x700`, matching stock DT node `ufs-io-coherency` mask/bits `0x00c00000`) and set `.iocc_mask = UFS_EXYNOS990_SHARABLE` in `exynos990_ufs_drvs` (`drivers/ufs/host/ufs-exynos.c`).
+3. Ensure `exynos_ufs_resume` calls `exynos_ufs_shareability(ufs)`.
+4. Boot menu default set to `rescue` (stay in initramfs with SSH up) so the coordinator can safely execute the 6 GiB UFS read stress test (`dd if=/dev/sda32 bs=4M count=1536 of=/dev/null`) over SSH.
+5. Provide live trigger mechanism `/run/go-rootfs` and helper utility `/usr/sbin/c2s-go-rootfs` to transition to rootfs on demand without rebooting.
+
+### Artifacts (build host, `/tmp/opencode/c2s-diag22b-out`)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `boot.img` (diag22b, signed) | 61,865,984 B | `1990647db7f63a3822a50974cf7f6e883529a6000c3351be0bc8407d41b445c1` |
+| `Image` (diag22b) | 15,092,224 B | `7af2dc83ba3bebebbb3986ffaddb92dad6a058c252783945ebf4a22b5269dac0` |
+| `DTB` | 149,138 B | `2093ed8c29bd99b2eae643296363210eefe757d152f00635df19069a31aa240b` |
+| `initramfs` | 3,375,015 B | `70ee2acf56b046bcda89e697f26c0fbdbfaa8f55ba67d13f18efe456056fd1ab` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 149,138 B == kbuild DTB.
+
+### Verification
+* `verify.sh`: **426 passed, 0 failed**.
+* Gate: `dma-coherent` property present in `ufs_0` node.
+* Gate: `UFS_EXYNOS990_SHARABLE` defined as `0x00c00000`.
+* Gate: `exynos990_ufs_drvs` has `iocc_mask = UFS_EXYNOS990_SHARABLE`.
+* Gate: `initramfs` includes `/usr/sbin/c2s-go-rootfs`.
+* Gate: `/run/go-rootfs` trigger present in `/init`.
+* Negative controls verified for all new gates.
+
+
 

@@ -1265,6 +1265,7 @@ check "/usr/sbin/c2s-blockmap present in extracted rootfs" test -x "${UNPACK}/us
 check "/usr/sbin/c2s-flash-boot present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-flash-boot"
 check "/usr/sbin/c2s-touch-probe present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-touch-probe"
 check "/usr/sbin/c2s-gpu-probe present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-gpu-probe"
+check "/usr/sbin/c2s-go-rootfs present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-go-rootfs"
 
 BM_ENTRY=$(CPIO_ENTRY "usr/sbin/c2s-blockmap")
 if [ -n "${BM_ENTRY}" ]; then
@@ -1500,6 +1501,18 @@ grep -q 'boot_menu' "${INIT}" \
 grep -q 'enable-telnet' "${INIT}" \
 	&& ok "init: telnet armed only via marker/menu selection" \
 	|| bad "init: telnet gate missing"
+grep -q 'go-rootfs' "${INIT}" \
+	&& ok "init: go-rootfs trigger present" \
+	|| bad "init: go-rootfs trigger missing"
+# Negative control for go-rootfs gate
+_neg_goroot=$(mktemp)
+grep -v 'go-rootfs' "${INIT}" > "${_neg_goroot}"
+if ! grep -q 'go-rootfs' "${_neg_goroot}"; then
+	ok "go-rootfs negative control: missing trigger check is detected (gate is sensitive)"
+else
+	bad "go-rootfs negative control failed"
+fi
+rm -f "${_neg_goroot}"
 # 3. /init must start telnetd exactly once (inside the gated
 #    start_telnetd()); no second, ungated invocation anywhere
 TELD_CALLS=$(grep -n '^[[:space:]]*telnetd -F' "${INIT}" | wc -l)
@@ -1682,22 +1695,22 @@ open(sys.argv[1], 'ab').write(struct.pack('<QQHHi', 0, 0,
 		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev2")" = "rescue" ] \
 			&& ok "keys: release+press sequence selects rescue" \
 			|| bad "keys: release+press sequence did not select rescue"
-		# 3. release alone (value 0) -> default rootfs
+		# 3. release alone (value 0) -> default rescue
 		: > "${MENUDIR}/ev3"; ev "${MENUDIR}/ev3" 1 114 0
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev3")" = "rootfs" ] \
-			&& ok "keys: release event does not select rescue (defaults to rootfs)" \
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev3")" = "rescue" ] \
+			&& ok "keys: release event does not select (defaults to rescue)" \
 			|| bad "keys: release event changed default selection"
-		# 4. autorepeat (value 2) on 115/116 -> default rootfs (never rescue)
+		# 4. autorepeat (value 2) on 115/116 -> default rescue (never triggers rootfs)
 		: > "${MENUDIR}/ev4"
 		ev "${MENUDIR}/ev4" 1 115 2; ev "${MENUDIR}/ev4" 1 116 2
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev4")" = "rootfs" ] \
-			&& ok "keys: autorepeat events do not select" \
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev4")" = "rescue" ] \
+			&& ok "keys: autorepeat events do not select (defaults to rescue)" \
 			|| bad "keys: autorepeat events changed the selection"
-		# 5. foreign key press (113 mute) + EV_SYN (type 0) -> default rootfs
+		# 5. foreign key press (113 mute) + EV_SYN (type 0) -> default rescue
 		: > "${MENUDIR}/ev5"
 		ev "${MENUDIR}/ev5" 1 113 1; ev "${MENUDIR}/ev5" 0 0 0
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev5")" = "rootfs" ] \
-			&& ok "keys: foreign key press and EV_SYN do not select (defaults to rootfs)" \
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev5")" = "rescue" ] \
+			&& ok "keys: foreign key press and EV_SYN do not select (defaults to rescue)" \
 			|| bad "keys: foreign event selected a mode"
 		# 6. volume-up (115) and power (116) press -> rootfs
 		: > "${MENUDIR}/ev6"
@@ -1710,11 +1723,11 @@ open(sys.argv[1], 'ab').write(struct.pack('<QQHHi', 0, 0,
 		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev6b")" = "rootfs" ] \
 			&& ok "keys: power selects rootfs" \
 			|| bad "keys: power did not select rootfs"
-		# 7. timeout -> rootfs, and stdout must be exactly one line
+		# 7. timeout -> rescue, and stdout must be exactly one line
 		OUT=$(run_keys -t 1 -- "${NODEV}" "${NODEV}")
-		[ "${OUT}" = "rootfs" ] \
-			&& ok "keys: timeout defaults to rootfs" \
-			|| bad "keys: timeout did not default to rootfs"
+		[ "${OUT}" = "rescue" ] \
+			&& ok "keys: timeout defaults to rescue" \
+			|| bad "keys: timeout did not default to rescue"
 		[ "$(printf '%s\n' "${OUT}" | wc -l)" -eq 1 ] \
 			&& ok "keys: stdout carries exactly one line" \
 			|| bad "keys: stdout is not a single line"
@@ -1734,19 +1747,19 @@ open(sys.argv[1], 'ab').write(struct.pack('<QQHHi', 0, 0,
 		( exec 3> "${SER}"; printf '  vol-down or type rescue  : rescue mode (stay in initramfs)\r\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 2 -- "${SER}" "${NODEV}")
 		wait || true
-		[ "${OUT}" = "rootfs" ] \
+		[ "${OUT}" = "rescue" ] \
 			&& ok "keys: menu-echo line during drain does not select" \
-			|| bad "keys: echoed menu text selected rescue"
+			|| bad "keys: echoed menu text selected a mode"
 		# 9b. buffered input at menu start (arrives during the drain
 		#     window, before raw mode could flush it) must not select:
 		#     even an exact "telnet\r\n" is discarded there.
 		( exec 3> "${SER}"; printf 'telnet\r\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 2 -- "${SER}" "${NODEV}")
 		wait || true
-		[ "${OUT}" = "rootfs" ] \
+		[ "${OUT}" = "rescue" ] \
 			&& ok "keys: buffered line during drain window is discarded" \
 			|| bad "keys: buffered line during drain selected rescue"
-		# 10. serial line "rescue" and empty Enter -> rootfs
+		# 10. serial line "rescue" and empty Enter -> rescue
 		( exec 3> "${SER}"; sleep 0.6; printf 'rescue\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 3 -- "${SER}" "${NODEV}")
 		wait || true
@@ -1756,8 +1769,8 @@ open(sys.argv[1], 'ab').write(struct.pack('<QQHHi', 0, 0,
 		( exec 3> "${SER}"; sleep 0.6; printf '\r\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 3 -- "${SER}" "${NODEV}")
 		wait || true
-		[ "${OUT}" = "rootfs" ] \
-			&& ok "keys: serial Enter selects rootfs" \
+		[ "${OUT}" = "rescue" ] \
+			&& ok "keys: serial Enter selects rescue (default)" \
 			|| bad "keys: serial Enter failed"
 		( exec 3> "${SER}"; sleep 0.6; printf 'rootfs\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 3 -- "${SER}" "${NODEV}")
@@ -1765,12 +1778,12 @@ open(sys.argv[1], 'ab').write(struct.pack('<QQHHi', 0, 0,
 		[ "${OUT}" = "rootfs" ] \
 			&& ok "keys: serial 'rootfs' selects rootfs" \
 			|| bad "keys: serial 'rootfs' failed"
-		# 11. garbage serial line -> ignored, timeout -> rootfs
+		# 11. garbage serial line -> ignored, timeout -> rescue
 		( exec 3> "${SER}"; sleep 0.6; printf 'hello world\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 2 -- "${SER}" "${NODEV}")
 		wait || true
-		[ "${OUT}" = "rootfs" ] \
-			&& ok "keys: garbage serial line ignored (timeout -> rootfs)" \
+		[ "${OUT}" = "rescue" ] \
+			&& ok "keys: garbage serial line ignored (timeout -> rescue)" \
 			|| bad "keys: garbage serial line changed the selection"
 
 		# 12. events arriving over time on a fifo (writer opens first,
@@ -1800,8 +1813,8 @@ PYEOF
 		( exec 3> "${FIFO2}"; exec 3>&- ) &
 		OUT=$(run_keys -t 1 -- "${NODEV}" "${FIFO2}")
 		wait || true
-		[ "${OUT}" = "rootfs" ] \
-			&& ok "keys: closed fifo writer times out to rootfs" \
+		[ "${OUT}" = "rescue" ] \
+			&& ok "keys: closed fifo writer times out to rescue" \
 			|| bad "keys: closed fifo writer did not time out cleanly"
 
 		# ---- wrapper (rescue-menu): sysfs discovery, NOT event0 ----
@@ -1846,19 +1859,19 @@ PYEOF
 		: > "${FAKE}/dev/input/event7"
 		rm -rf "${FAKE}/sys/event7"
 		OUT=$(run_menu "${MENUDIR}/wrapper2.log")
-		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "rootfs" ] \
-			&& ok "menu: non-gpio event0 (no key caps) is not used (defaults to rootfs)" \
+		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "rescue" ] \
+			&& ok "menu: non-gpio event0 (no key caps) is not used (defaults to rescue)" \
 			|| bad "menu: hostile event0 was used for input"
-		# no gpio-keys at all -> wrapper must still default to rootfs
+		# no gpio-keys at all -> wrapper must still default to rescue
 		OUT=$(env -i PATH=/usr/bin:/bin \
 			RESCUE_MENU_SYSFS="${MENUDIR}/does-not-exist" \
 			RESCUE_MENU_TIMEOUT=3 \
 			RESCUE_MENU_KEYS="${KEYS}" \
 			timeout 30 "${QEMU}" "${UNPACK}/bin/busybox" ash "${MENU}" \
 			2> "${MENUDIR}/wrapper3.log")
-		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "rootfs" ] \
-			&& ok "menu: no gpio-keys found -> rootfs (default)" \
-			|| bad "menu: missing gpio-keys did not default to rootfs"
+		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "rescue" ] \
+			&& ok "menu: no gpio-keys found -> rescue (default)" \
+			|| bad "menu: missing gpio-keys did not default to rescue"
 	fi
 fi
 # root-owned, strict permissions on the credential path
@@ -2535,8 +2548,14 @@ else
 fi
 rm -f "${_neg_ev_md}"
 
-# ------------------------------------------------------------ UFS driver verification (diag22a, issue #20)
-section "ufs driver verification (diag22a, issue #20)"
+# ------------------------------------------------------------ UFS driver verification (diag22b, issue #20)
+section "ufs driver verification (diag22b, issue #20)"
+check "dma-coherent property present in ufs node" \
+	sh -c 'fdtget "$1" /soc@0/ufs@13100000 dma-coherent' _ "${DTB}"
+check "UFS_EXYNOS990_SHARABLE defined as 0x00c00000 in ufs-exynos.c" \
+	grep -q "#define UFS_EXYNOS990_SHARABLE[[:space:]]*0x00c00000" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+check "exynos990_ufs_drvs has iocc_mask = UFS_EXYNOS990_SHARABLE" \
+	sh -c 'grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "\.iocc_mask[[:space:]]*=[[:space:]]*UFS_EXYNOS990_SHARABLE"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "exynos990_ufs_drvs quirks match z3s reference" \
 	sh -c 'grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL absent from exynos990_ufs_drvs" \
@@ -2545,6 +2564,33 @@ check "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR absent from exynos990_ufs_drvs" \
 	sh -c '! (grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "exynos990_ufs_drvs post_link and pre_pwr_change absent" \
 	sh -c '! (grep -A 20 "exynos990_ufs_drvs" "$1" | grep -E -q "\.(post_link|pre_pwr_change)")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+
+# Negative control for dma-coherent in DTB
+if fdtget "${DTB}" /soc@0/ufs@13100000 non_existent_dummy_prop >/dev/null 2>&1; then
+	bad "dma-coherent negative control failed: non_existent property unexpectedly matched"
+else
+	ok "dma-coherent negative control: missing property is detected (gate is sensitive)"
+fi
+
+# Negative control for UFS_EXYNOS990_SHARABLE definition
+_neg_ufs_sh=$(mktemp)
+grep -v "UFS_EXYNOS990_SHARABLE" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" > "${_neg_ufs_sh}"
+if grep -q "UFS_EXYNOS990_SHARABLE" "${_neg_ufs_sh}"; then
+	bad "UFS_EXYNOS990_SHARABLE negative control failed: pattern unexpectedly matched"
+else
+	ok "UFS_EXYNOS990_SHARABLE negative control: missing define is detected (gate is sensitive)"
+fi
+rm -f "${_neg_ufs_sh}"
+
+# Negative control for iocc_mask in exynos990_ufs_drvs
+_neg_ufs_mask=$(mktemp)
+grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "iocc_mask" > "${_neg_ufs_mask}"
+if grep -q "iocc_mask" "${_neg_ufs_mask}"; then
+	bad "exynos990_ufs_drvs iocc_mask negative control failed: pattern unexpectedly matched"
+else
+	ok "exynos990_ufs_drvs iocc_mask negative control: missing iocc_mask is detected (gate is sensitive)"
+fi
+rm -f "${_neg_ufs_mask}"
 
 # Negative control for z3s quirks reference gate
 _neg_ufs_z3s=$(mktemp)

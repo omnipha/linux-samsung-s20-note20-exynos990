@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+#
+# c2s-go-rootfs - Trigger switch_root to Debian rootfs from running rescue session
+#
+# Creates /run/go-rootfs which PID 1 (init) detects to execute try_switch_root.
+
+echo "c2s: triggering switch_root to Debian rootfs..."
+touch /run/go-rootfs
+echo "Trigger file /run/go-rootfs created."

@@ -131,16 +131,16 @@ fi
 say ""
 say "c2s boot menu (timeout ${TIMEOUT}s)"
 say "----------------------------"
-say " default / timeout      : boot Debian rootfs (userdata c2s-root)"
-say " vol-up / power / enter : boot Debian rootfs"
-say " vol-down or 'rescue'   : rescue mode (stay in initramfs)"
+say " default / timeout      : rescue mode (stay in initramfs)"
+say " vol-up / power / 'rootfs': boot Debian rootfs"
+say " vol-down or 'rescue'   : rescue mode"
 say " 'telnet'               : rescue + USB telnet (DEBUG)"
 say "----------------------------"
 say " selecting for ${TIMEOUT}s ..."
 
 if [ ! -x "$KEYS" ]; then
-    say "boot menu: $KEYS missing; default rootfs mode"
-    echo "rootfs"
+    say "boot menu: $KEYS missing; default rescue mode"
+    echo "rescue"
     exit 0
 fi
 

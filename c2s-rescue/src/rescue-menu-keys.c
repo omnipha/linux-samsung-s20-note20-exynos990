@@ -148,9 +148,9 @@ int main(int argc, char **argv)
 
 	banner_len = snprintf(banner, sizeof(banner),
 		"c2s boot menu (timeout %.0fs)\r\n"
-		"  default / timeout        : boot rootfs (userdata c2s-root)\r\n"
-		"  vol-up / power / enter   : boot rootfs\r\n"
-		"  vol-down or type rescue  : rescue mode (stay in initramfs)\r\n"
+		"  default / timeout        : rescue mode (stay in initramfs)\r\n"
+		"  vol-up / power / 'rootfs': boot rootfs (userdata c2s-root)\r\n"
+		"  vol-down or type rescue  : rescue mode\r\n"
 		"  type telnet              : rescue + USB telnet (DEBUG)\r\n",
 		timeout);
 	if (banner_len < 0)
@@ -206,8 +206,8 @@ int main(int argc, char **argv)
 		nfds++;
 	}
 	if (nfds == 0) {
-		feedback("no input device could be opened; default rootfs");
-		printf("rootfs\n");
+		feedback("no input device could be opened; default rescue");
+		printf("rescue\n");
 		return 0;
 	}
 
@@ -296,14 +296,14 @@ int main(int argc, char **argv)
 								mode = "telnet";
 								feedback("serial 'telnet' -> telnet (USB only, explicit)");
 							} else if (line_is(cmd, "rescue") ||
-								   line_is(cmd, "ssh")) {
-								mode = "rescue";
-								feedback("serial 'rescue' -> rescue mode");
-							} else if (line_is(cmd, "rootfs") ||
-								   line_is(cmd, "boot") ||
+								   line_is(cmd, "ssh") ||
 								   cmd[0] == '\0') {
+								mode = "rescue";
+								feedback("serial enter/rescue -> rescue mode");
+							} else if (line_is(cmd, "rootfs") ||
+								   line_is(cmd, "boot")) {
 								mode = "rootfs";
-								feedback("serial enter -> boot rootfs");
+								feedback("serial 'rootfs' -> boot rootfs");
 							} else {
 								char msg[160];
 								snprintf(msg, sizeof(msg),
@@ -329,8 +329,8 @@ int main(int argc, char **argv)
 	}
 
 	if (!mode) {
-		mode = "rootfs";
-		feedback("timeout; default boot rootfs");
+		mode = "rescue";
+		feedback("timeout; default rescue mode (stay in initramfs)");
 	}
 	printf("%s\n", mode);
 	return 0;

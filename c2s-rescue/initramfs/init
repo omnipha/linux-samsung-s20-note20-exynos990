@@ -314,6 +314,12 @@ boot_menu() {
         log "boot menu: telnet already armed (rescue-telnet arm); keeping it armed"
         return 0
     fi
+    if [ -f /run/go-rootfs ]; then
+        log "boot menu: /run/go-rootfs trigger present; attempting switch_root"
+        rm -f /run/go-rootfs
+        try_switch_root
+        return 0
+    fi
     mode=$(rescue-menu 2>>/dev/kmsg)
     case "$mode" in
         telnet)
@@ -321,12 +327,12 @@ boot_menu() {
             RESCUE_ENABLE_TELNET=1
             log "boot menu: telnet mode selected (USB-only, until rescue-telnet disarm)"
             ;;
-        rescue)
-            log "boot menu: rescue mode selected (staying in initramfs)"
+        rootfs)
+            log "boot menu: rootfs mode selected (explicit trigger); attempting switch_root"
+            try_switch_root
             ;;
         *)
-            log "boot menu: rootfs mode selected (default); attempting switch_root"
-            try_switch_root
+            log "boot menu: rescue mode selected (default; staying in initramfs)"
             ;;
     esac
 }
@@ -357,6 +363,11 @@ log "init done, entering PID 1 supervision loop"
 # returns 127 when there is nothing to wait for, so the || sleep 1
 # keeps the loop from spinning.
 while :; do
+    if [ -f /run/go-rootfs ]; then
+        log "supervision: /run/go-rootfs trigger detected; attempting switch_root"
+        rm -f /run/go-rootfs
+        try_switch_root
+    fi
     wait -n 2>/dev/null || sleep 1
 
     if [ -n "$CONSOLE_PID" ] && ! kill -0 "$CONSOLE_PID" 2>/dev/null; then

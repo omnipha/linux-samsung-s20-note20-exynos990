@@ -101,6 +101,7 @@
 #define UFS_GS101_RD_SHARABLE		BIT(0)
 #define UFS_GS101_SHARABLE		(UFS_GS101_WR_SHARABLE | \
 					 UFS_GS101_RD_SHARABLE)
+#define UFS_EXYNOS990_SHARABLE		0x00c00000
 #define UFS_SHAREABILITY_OFFSET		0x710
 
 /* Multi-host registers */
@@ -1742,7 +1743,7 @@ static int exynos_ufs_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 
 	exynos_ufs_config_smu(ufs);
 	exynos_ufs_fmp_resume(hba);
-	return 0;
+	return exynos_ufs_shareability(ufs);
 }
 
 static int exynosauto_ufs_vh_link_startup_notify(struct ufs_hba *hba,
@@ -2183,6 +2184,7 @@ static const struct exynos_ufs_drv_data exynos990_ufs_drvs = {
 				  EXYNOS_UFS_OPT_UFSPR_SECURE |
 				  EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR |
 				  EXYNOS_UFS_OPT_TIMER_TICK_SELECT,
+	.iocc_mask		= UFS_EXYNOS990_SHARABLE,
 	.drv_init		= exynosauto_ufs_drv_init,
 	.pre_link		= exynos990_ufs_pre_link,
 };
