@@ -2,6 +2,7 @@
 
 #include <linux/aperture.h>
 #include <linux/clk.h>
+#include <linux/dma-mapping.h>
 #include <linux/minmax.h>
 #include <linux/of_address.h>
 #include <linux/of_clk.h>
@@ -840,6 +841,22 @@ static int simpledrm_probe(struct platform_device *pdev)
 	struct drm_sysfb_device *sysfb;
 	struct drm_device *dev;
 	int ret;
+
+	/*
+	 * Platform devices default to a 32-bit DMA mask. On systems with more
+	 * than 4GB of RAM, buffers imported from a render-only GPU (e.g.
+	 * panfrost) are allocated above 4GB and every import gets bounced
+	 * through the swiotlb, which cannot serve mappings larger than
+	 * IO_TLB_SEGSIZE (256K). A full 1440x3088x4 framebuffer is ~18MB, so
+	 * the import always fails with "swiotlb buffer is full" and the
+	 * compositor sees allocation failures / SIGBUS.
+	 * Advertise 64-bit addressing so these buffers are mapped directly.
+	 */
+	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+	if (ret)
+		dev_warn(&pdev->dev,
+			 "64-bit DMA mask unavailable (%d), large buffer imports may bounce through swiotlb\n",
+			 ret);
 
 	sdev = simpledrm_device_create(&simpledrm_driver, pdev);
 	if (IS_ERR(sdev))

@@ -29,6 +29,8 @@
 	#size-cells = <1>;
 
 	chosen {
+		#address-cells = <2>;
+		#size-cells = <1>;
 		ranges;
 		status = "okay";
 
@@ -39,6 +41,7 @@
 			height = <3088>;
 			stride = <(1440 * 4)>;
 			format = "a8r8g8b8";
+			memory-region = <&cont_splash_mem>;
 		};
 	};
 

@@ -66,7 +66,7 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
          USB_CONFIGFS_ACM USB_LIBCOMPOSITE USB_U_ETHER USB_U_SERIAL USB_F_NCM \
          USB_F_RNDIS USB_F_ACM USB_DWC3 USB_DWC3_GADGET USB_DWC3_EXYNOS \
          PHY_EXYNOS5_USBDRD NET UNIX INET DEVTMPFS TMPFS BLK_DEV_INITRD RD_GZIP \
-         BINFMT_ELF BINFMT_SCRIPT MULTIUSER UNIX98_PTYS FB FB_SIMPLE \
+         BINFMT_ELF BINFMT_SCRIPT MULTIUSER UNIX98_PTYS FB \
          FRAMEBUFFER_CONSOLE VT VT_CONSOLE INPUT INPUT_EVDEV KEYBOARD_GPIO \
          IKCONFIG IKCONFIG_PROC PRINTK_TIME \
          SCSI BLK_DEV_SD SCSI_UFSHCD SCSI_UFSHCD_PLATFORM SCSI_UFS_EXYNOS \
@@ -74,7 +74,8 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
          REBOOT_MODE SYSCON_REBOOT_MODE \
          MAILBOX EXYNOS_MBOX EXYNOS_ACPM_PROTOCOL REGULATOR_S2MPS19_ACPM \
          I2C I2C_CHARDEV I2C_EXYNOS5 EXYNOS_USI REGULATOR_S2DOS05 \
-         INPUT_TOUCHSCREEN TOUCHSCREEN_S6SY761; do
+         INPUT_TOUCHSCREEN TOUCHSCREEN_S6SY761 \
+         DRM DRM_SIMPLEDRM DRM_FBDEV_EMULATION; do
 	require_cfg "$s" y
 done
 # Negative control for CONFIG_UNIX gate: prove that an unset CONFIG_UNIX
@@ -145,6 +146,22 @@ if printf '%s\n' "${_neg_s6sy761_out}" | grep -q "FAIL: CONFIG_TOUCHSCREEN_S6SY7
 	ok "CONFIG_TOUCHSCREEN_S6SY761 negative control: unset symbol is rejected (gate is sensitive)"
 else
 	bad "CONFIG_TOUCHSCREEN_S6SY761 negative control failed: ${_neg_s6sy761_out}"
+fi
+if grep -q "^CONFIG_FB_SIMPLE=y" "${CONFIG}" 2> /dev/null; then
+	bad "CONFIG_FB_SIMPLE=y (should be superseded by DRM_SIMPLEDRM)"
+else
+	ok "CONFIG_FB_SIMPLE is not set (superseded by DRM_SIMPLEDRM)"
+fi
+# Negative control for CONFIG_DRM_SIMPLEDRM gate:
+_neg_simpledrm_cfg=$(mktemp)
+grep -v "^CONFIG_DRM_SIMPLEDRM=" "${CONFIG}" > "${_neg_simpledrm_cfg}"
+echo "# CONFIG_DRM_SIMPLEDRM is not set" >> "${_neg_simpledrm_cfg}"
+_neg_simpledrm_out=$(CONFIG="${_neg_simpledrm_cfg}" require_cfg DRM_SIMPLEDRM y)
+rm -f "${_neg_simpledrm_cfg}"
+if printf '%s\n' "${_neg_simpledrm_out}" | grep -q "FAIL: CONFIG_DRM_SIMPLEDRM"; then
+	ok "CONFIG_DRM_SIMPLEDRM negative control: unset symbol is rejected (gate is sensitive)"
+else
+	bad "CONFIG_DRM_SIMPLEDRM negative control failed: ${_neg_simpledrm_out}"
 fi
 require_cfg CMDLINE_FORCE y
 require_cfg PANIC_TIMEOUT 0
@@ -2002,6 +2019,17 @@ check "s2dos05 pmic present" \
 	grep -q "samsung,s2dos05" "${DTB_TXT}"
 check "touchscreen s6sy761 present" \
 	grep -q "samsung,s6sy761" "${DTB_TXT}"
+check "framebuffer0 has memory-region" \
+	grep -q "memory-region" "${DTB_TXT}"
+# Negative control for framebuffer memory-region gate: prove missing memory-region is detected
+_neg_fb_dts=$(mktemp)
+grep -v "memory-region" "${DTB_TXT}" > "${_neg_fb_dts}"
+if grep -q "memory-region" "${_neg_fb_dts}"; then
+	bad "DT memory-region negative control failed: pattern unexpectedly matched"
+else
+	ok "DT memory-region negative control: missing memory-region property is detected (gate is sensitive)"
+fi
+rm -f "${_neg_fb_dts}"
 # Negative control for ACPM DT gate: prove missing acpm-ipc is detected
 _neg_acpm_dts=$(mktemp)
 grep -v "samsung,exynos990-acpm-ipc" "${DTB_TXT}" > "${_neg_acpm_dts}"
