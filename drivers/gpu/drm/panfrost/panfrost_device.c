@@ -234,16 +234,22 @@ int panfrost_device_init(struct panfrost_device *pfdev)
 
 	err = panfrost_devfreq_init(pfdev);
 	if (err) {
-		if (err != -EPROBE_DEFER)
-			dev_err(pfdev->base.dev, "devfreq init failed %d\n", err);
-		goto out_clk;
+		if (err == -EPROBE_DEFER)
+			goto out_clk;
+		dev_warn(pfdev->base.dev, "devfreq init failed (%d), continuing without devfreq\n", err);
+		panfrost_devfreq_fini(pfdev);
+		err = 0;
 	}
 
-	/* OPP will handle regulators */
+	/* OPP will handle regulators if table was added */
 	if (!pfdev->pfdevfreq.opp_of_table_added) {
 		err = panfrost_regulator_init(pfdev);
-		if (err)
-			goto out_devfreq;
+		if (err) {
+			if (err == -EPROBE_DEFER)
+				goto out_devfreq;
+			dev_warn(pfdev->base.dev, "regulator init failed (%d), continuing\n", err);
+			err = 0;
+		}
 	}
 
 	pfdev->iomem = devm_platform_ioremap_resource(to_platform_device(pfdev->base.dev), 0);
@@ -479,7 +485,8 @@ static int panfrost_device_resume(struct device *dev)
 	struct panfrost_device *pfdev = dev_get_drvdata(dev);
 	int ret;
 
-	if (pfdev->comp->pm_features & BIT(GPU_PM_VREG_OFF)) {
+	if ((pfdev->comp->pm_features & BIT(GPU_PM_VREG_OFF)) &&
+	    pfdev->pfdevfreq.opp_of_table_added && pfdev->pfdevfreq.fast_rate) {
 		unsigned long freq = pfdev->pfdevfreq.fast_rate;
 		struct dev_pm_opp *opp;
 
@@ -515,7 +522,8 @@ err_bus_clk:
 	if (pfdev->comp->pm_features & BIT(GPU_PM_CLK_DIS))
 		clk_disable(pfdev->clock);
 err_clk:
-	if (pfdev->comp->pm_features & BIT(GPU_PM_VREG_OFF))
+	if ((pfdev->comp->pm_features & BIT(GPU_PM_VREG_OFF)) &&
+	    pfdev->pfdevfreq.opp_of_table_added)
 		dev_pm_opp_set_opp(dev, NULL);
 	return ret;
 }
@@ -536,7 +544,8 @@ static int panfrost_device_suspend(struct device *dev)
 		clk_disable(pfdev->clock);
 	}
 
-	if (pfdev->comp->pm_features & BIT(GPU_PM_VREG_OFF))
+	if ((pfdev->comp->pm_features & BIT(GPU_PM_VREG_OFF)) &&
+	    pfdev->pfdevfreq.opp_of_table_added)
 		dev_pm_opp_set_opp(dev, NULL);
 
 	return 0;

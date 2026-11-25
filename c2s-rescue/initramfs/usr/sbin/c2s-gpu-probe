@@ -1,0 +1,82 @@
+#!/bin/sh
+# /usr/sbin/c2s-gpu-probe: safe, read-only diagnostic for Panfrost GPU, devfreq, and DRM
+set -u
+
+echo "============================================================"
+echo "c2s GPU Subsystem Probe"
+echo "============================================================"
+
+echo "--- 1. Kernel Messages (Panfrost, Mali, DRM, Devfreq) ---"
+dmesg | grep -Ei "panfrost|mali|18500000|drm|devfreq|gpu" || echo "No matching dmesg entries"
+
+echo ""
+echo "--- 2. Devfreq Status (/sys/class/devfreq) ---"
+if [ -d /sys/class/devfreq ]; then
+    devfreq_found=0
+    for d in /sys/class/devfreq/*; do
+        if [ -d "$d" ]; then
+            devfreq_found=1
+            dname=$(basename "$d")
+            echo "Device: $dname"
+            [ -f "$d/cur_freq" ] && echo "  cur_freq: $(cat "$d/cur_freq" 2>/dev/null)"
+            [ -f "$d/target_freq" ] && echo "  target_freq: $(cat "$d/target_freq" 2>/dev/null)"
+            [ -f "$d/governor" ] && echo "  governor: $(cat "$d/governor" 2>/dev/null)"
+            [ -f "$d/available_governors" ] && echo "  available_governors: $(cat "$d/available_governors" 2>/dev/null)"
+            [ -f "$d/available_frequencies" ] && echo "  available_frequencies: $(cat "$d/available_frequencies" 2>/dev/null)"
+        fi
+    done
+    if [ "$devfreq_found" -eq 0 ]; then
+        echo "No devfreq devices found in /sys/class/devfreq"
+    fi
+else
+    echo "/sys/class/devfreq not available"
+fi
+
+echo ""
+echo "--- 3. DRM Nodes & Render Devices (/dev/dri) ---"
+if [ -d /dev/dri ]; then
+    ls -la /dev/dri/ 2>/dev/null || true
+    if [ -e /dev/dri/renderD128 ]; then
+        echo "  renderD128: PRESENT"
+    else
+        echo "  renderD128: NOT PRESENT"
+    fi
+else
+    echo "/dev/dri directory not found"
+fi
+
+echo ""
+echo "--- 4. DRM Sysfs Devices (/sys/class/drm) ---"
+if [ -d /sys/class/drm ]; then
+    for card in /sys/class/drm/*; do
+        if [ -e "$card" ]; then
+            cname=$(basename "$card")
+            drv=$(readlink "$card/device/driver" 2>/dev/null || echo "none")
+            drv=$(basename "$drv")
+            echo "  $cname -> driver: $drv"
+        fi
+    done
+else
+    echo "/sys/class/drm not available"
+fi
+
+echo ""
+echo "--- 5. G3D Power Domain & Regulator ---"
+if [ -d /sys/class/regulator ]; then
+    for r in /sys/class/regulator/*; do
+        if [ -d "$r" ]; then
+            rname=$(cat "$r/name" 2>/dev/null || basename "$r")
+            case "$rname" in
+                *buck1*|*g3d*|*mali*)
+                    state=$(cat "$r/state" 2>/dev/null || echo "unknown")
+                    microvolt=$(cat "$r/microvolts" 2>/dev/null || echo "unknown")
+                    echo "  $rname: state=$state voltage=${microvolt}uV"
+                    ;;
+            esac
+        fi
+    done
+else
+    echo "/sys/class/regulator not available"
+fi
+
+echo "============================================================"

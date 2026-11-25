@@ -78,6 +78,59 @@
 		regulator-always-on;
 	};
 
+	g3d_reg: regulator-g3d {
+		compatible = "regulator-fixed";
+		regulator-name = "s_vdd_buck1";
+		regulator-min-microvolt = <800000>;
+		regulator-max-microvolt = <800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	gpu_opp_table: opp-table-gpu {
+		compatible = "operating-points-v2";
+
+		opp-156000000 {
+			opp-hz = /bits/ 64 <156000000>;
+			opp-microvolt = <800000>;
+		};
+
+		opp-260000000 {
+			opp-hz = /bits/ 64 <260000000>;
+			opp-microvolt = <800000>;
+		};
+
+		opp-377000000 {
+			opp-hz = /bits/ 64 <377000000>;
+			opp-microvolt = <800000>;
+		};
+
+		opp-455000000 {
+			opp-hz = /bits/ 64 <455000000>;
+			opp-microvolt = <800000>;
+		};
+
+		opp-572000000 {
+			opp-hz = /bits/ 64 <572000000>;
+			opp-microvolt = <800000>;
+		};
+
+		opp-702000000 {
+			opp-hz = /bits/ 64 <702000000>;
+			opp-microvolt = <800000>;
+		};
+
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <800000>;
+		};
+
+		opp-832000000 {
+			opp-hz = /bits/ 64 <832000000>;
+			opp-microvolt = <800000>;
+		};
+	};
+
 	reserved-memory {
 		/* Must equal the root cells: __reserved_mem_check_root(). */
 		#address-cells = <2>;
@@ -288,4 +341,9 @@
 &touchscreen {
 	pinctrl-names = "default";
 	pinctrl-0 = <&attn_irq>;
+};
+
+&gpu {
+	mali-supply = <&g3d_reg>;
+	operating-points-v2 = <&gpu_opp_table>;
 };

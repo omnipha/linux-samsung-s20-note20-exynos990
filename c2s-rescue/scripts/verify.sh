@@ -1236,6 +1236,7 @@ section "storage tools (issue #5, diag15)"
 check "/usr/sbin/c2s-blockmap present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-blockmap"
 check "/usr/sbin/c2s-flash-boot present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-flash-boot"
 check "/usr/sbin/c2s-touch-probe present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-touch-probe"
+check "/usr/sbin/c2s-gpu-probe present in extracted rootfs" test -x "${UNPACK}/usr/sbin/c2s-gpu-probe"
 
 BM_ENTRY=$(CPIO_ENTRY "usr/sbin/c2s-blockmap")
 if [ -n "${BM_ENTRY}" ]; then
@@ -1303,6 +1304,35 @@ else
 	bad "c2s-touch-probe negative control failed"
 fi
 rm -rf "${_neg_tp_root}"
+
+GP_ENTRY=$(CPIO_ENTRY "usr/sbin/c2s-gpu-probe")
+if [ -n "${GP_ENTRY}" ]; then
+	ok "archive carries /usr/sbin/c2s-gpu-probe: ${GP_ENTRY}"
+	GP_UID=$(printf '%s\n' "${GP_ENTRY}" | awk '{print $2}')
+	GP_GID=$(printf '%s\n' "${GP_ENTRY}" | awk '{print $3}')
+	if [ "${GP_UID}" = "0" ] && [ "${GP_GID}" = "0" ]; then
+		ok "archive /usr/sbin/c2s-gpu-probe is root-owned (uid 0 gid 0)"
+	else
+		bad "archive /usr/sbin/c2s-gpu-probe is not root-owned (uid=${GP_UID} gid=${GP_GID})"
+	fi
+	if printf '%s\n' "${GP_ENTRY}" | grep -qE '^100755 '; then
+		ok "archive /usr/sbin/c2s-gpu-probe is executable (mode 0755)"
+	else
+		bad "archive /usr/sbin/c2s-gpu-probe is not executable mode 0755: ${GP_ENTRY}"
+	fi
+else
+	bad "archive missing /usr/sbin/c2s-gpu-probe"
+fi
+# Negative control for c2s-gpu-probe
+_neg_gp_root=$(mktemp -d)
+cp -a "${UNPACK}"/* "${_neg_gp_root}/" 2>/dev/null || true
+rm -f "${_neg_gp_root}/usr/sbin/c2s-gpu-probe"
+if [ ! -f "${_neg_gp_root}/usr/sbin/c2s-gpu-probe" ]; then
+	ok "c2s-gpu-probe negative control: missing binary detected"
+else
+	bad "c2s-gpu-probe negative control failed"
+fi
+rm -rf "${_neg_gp_root}"
 
 # Verify busybox symlinks for storage utilities
 for a in sha256sum readlink basename sync blockdev df wc; do
@@ -2089,6 +2119,14 @@ check "gpu@18500000 present" \
 	grep -q "gpu@18500000" "${DTB_TXT}"
 check "gpu compatible is mali-valhall-jm" \
 	grep -q "arm,mali-valhall-jm" "${DTB_TXT}"
+check "gpu has mali-supply" \
+	grep -q "mali-supply" "${DTB_TXT}"
+check "gpu has operating-points-v2" \
+	grep -q "operating-points-v2" "${DTB_TXT}"
+check "regulator-g3d present" \
+	grep -q "s_vdd_buck1" "${DTB_TXT}"
+check "gpu_opp_table present" \
+	grep -q "opp-table-gpu" "${DTB_TXT}"
 # Negative control for pd_g3d DT gate: prove missing power domain is detected
 _neg_pd_dts=$(mktemp)
 grep -v "samsung,exynos990-pd" "${DTB_TXT}" > "${_neg_pd_dts}"
@@ -2107,6 +2145,33 @@ else
 	ok "DT GPU negative control: missing gpu node is detected (gate is sensitive)"
 fi
 rm -f "${_neg_gpu_dts}"
+# Negative control for GPU mali-supply DT gate: prove missing mali-supply is detected
+_neg_mali_supply_dts=$(mktemp)
+grep -v "mali-supply" "${DTB_TXT}" > "${_neg_mali_supply_dts}"
+if grep -q "mali-supply" "${_neg_mali_supply_dts}"; then
+	bad "DT mali-supply negative control failed: pattern unexpectedly matched"
+else
+	ok "DT mali-supply negative control: missing mali-supply is detected (gate is sensitive)"
+fi
+rm -f "${_neg_mali_supply_dts}"
+# Negative control for GPU operating-points-v2 DT gate: prove missing operating-points-v2 is detected
+_neg_gpu_opp_dts=$(mktemp)
+grep -v "operating-points-v2" "${DTB_TXT}" > "${_neg_gpu_opp_dts}"
+if grep -q "operating-points-v2" "${_neg_gpu_opp_dts}"; then
+	bad "DT operating-points-v2 negative control failed: pattern unexpectedly matched"
+else
+	ok "DT operating-points-v2 negative control: missing operating-points-v2 is detected (gate is sensitive)"
+fi
+rm -f "${_neg_gpu_opp_dts}"
+# Negative control for G3D regulator DT gate: prove missing s_vdd_buck1 is detected
+_neg_g3d_reg_dts=$(mktemp)
+grep -v "s_vdd_buck1" "${DTB_TXT}" > "${_neg_g3d_reg_dts}"
+if grep -q "s_vdd_buck1" "${_neg_g3d_reg_dts}"; then
+	bad "DT s_vdd_buck1 negative control failed: pattern unexpectedly matched"
+else
+	ok "DT s_vdd_buck1 negative control: missing s_vdd_buck1 is detected (gate is sensitive)"
+fi
+rm -f "${_neg_g3d_reg_dts}"
 # Negative control for framebuffer memory-region gate: prove missing memory-region is detected
 _neg_fb_dts=$(mktemp)
 grep -v "memory-region" "${DTB_TXT}" > "${_neg_fb_dts}"
