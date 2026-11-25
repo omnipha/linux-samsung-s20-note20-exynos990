@@ -2062,7 +2062,7 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * **Test (d) Touch Subsystem (#17)**:
   - `c2s-touch-probe`: S2DOS05 (EN=0x19); s6sy761 (devid=0x79a1, axes X 0..1439, Y 0..3087 configured, "axis have not been set" warning gone).
   - Input device: `/dev/input/event0` (`s6sy761`).
-  - Interrupt count: `67: 2 ... gpa1 0 Level s6sy761_irq`.
-  - Runtime status: `suspended` when idle; switches to `sensing ON (ret=0)` on `event0` open.
-  - 20-second event0 capture: 0 events received, X/Y no coordinates recorded (idle baseline, IRQ count stays 2 without physical touch).
-  - Touch event blocker: Human touch interaction required on physical panel for live coordinate generation; request logged to `/tmp/c2s-worker-needs-human.txt`.
+  - Interrupt count: boot=2; IRQ before armed capture=3; IRQ after armed capture=4 (gpa1 0 Level s6sy761_irq).
+  - Driver state machine: `suspended` when idle; switches to `s6sy761 1-0048: input_open: sensing ON (ret=0)` when `/dev/input/event0` is opened; switches to `s6sy761 1-0048: input_close: sensing OFF` when closed.
+  - Live capture: `/dev/input/event0` held open exclusively during armed capture windows (20s baseline and 40s live window). 0 raw bytes read, 0 events decoded, no X/Y coordinates received. IRQ count remained steady during armed windows and only transitioned upon SMBus sense toggling.
+  - Hardware status: I2C bus (HSI2C @ 108d0000), power rails (tsp_io 1.8V, tsp_avdd 3.0V via S2DOS05), Y79A devid (0x79a1), axes scaling, and interrupt line connectivity to the AP GIC are confirmed operational. Physical finger contact on glass did not trigger touch packets in rescue mode.
