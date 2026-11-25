@@ -734,6 +734,35 @@ for opt in "loglevel=8" "ignore_loglevel" "panic=0" "panic_on_oops=1"; do
 		bad "Image command line lacks ${opt}"
 	fi
 done
+require_cmdline_opt() {
+	local opt="$1"
+	if grep -E '^CONFIG_CMDLINE=' "${CONFIG}" 2>/dev/null | grep -q -- "${opt}"; then
+		ok "CONFIG_CMDLINE contains ${opt}"
+	else
+		bad "CONFIG_CMDLINE lacks ${opt}"
+	fi
+}
+for opt in "clk_ignore_unused" "pd_ignore_unused"; do
+	require_cmdline_opt "${opt}"
+	if grep -q "${opt}" "${IMG_STRINGS}"; then
+		ok "Image embeds ${opt} in its command line"
+	else
+		bad "Image command line lacks ${opt}"
+	fi
+done
+# Negative control for clk_ignore_unused and pd_ignore_unused: prove that if
+# either option is removed from CONFIG_CMDLINE, require_cmdline_opt rejects it.
+for opt in "clk_ignore_unused" "pd_ignore_unused"; do
+	_neg_cfg=$(mktemp)
+	sed "s/${opt}//g" "${CONFIG}" > "${_neg_cfg}"
+	_neg_out=$(CONFIG="${_neg_cfg}" require_cmdline_opt "${opt}")
+	rm -f "${_neg_cfg}"
+	if printf '%s\n' "${_neg_out}" | grep -q "FAIL: CONFIG_CMDLINE lacks ${opt}"; then
+		ok "${opt} negative control: missing ${opt} is rejected (gate is sensitive)"
+	else
+		bad "${opt} negative control failed: missing ${opt} was not rejected: ${_neg_out}"
+	fi
+done
 
 # ------------------------------------------ USB serial console (issue #4)
 # The rescue channel must be readable without the network and without a

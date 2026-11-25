@@ -1741,3 +1741,72 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * `verify.sh`: **306 passed, 0 failed** on diag15; **306 passed, 0 failed** on baseline.
 * `CONFIG_SCSI` negative control: unset CONFIG_SCSI rejected by require_cfg.
 * `CONFIG_UNIX` negative control: unset CONFIG_UNIX rejected by require_cfg.
+
+## Diag16 (Candidate 15): Unused clock and power domain disable prevention (`clk_ignore_unused pd_ignore_unused`)
+
+Issue #5 step: hardware measurement of diag15 showed panel console freezing after late cleanup calls "clk: Disabling unused clocks" and "PM: genpd: Disabling unused power domains" (47.7/48.6 s kernel time) because no mainline clock or power domain drivers exist for Exynos 990 to manage active hardware blocks.
+
+### Changes
+
+1. **Kernel defconfigs**:
+   - Added `clk_ignore_unused pd_ignore_unused` to `CONFIG_CMDLINE` in `arch/arm64/configs/c2s_rescue_diag_defconfig` and `arch/arm64/configs/c2s_rescue_defconfig`.
+   - Kept `console=tty0` as the last `console=` token, preserving preferred framebuffer console routing.
+   - Preserved `CONFIG_UNIX=y`, UFS drivers, DT, initramfs, and all other configurations.
+2. **Host verification gates**:
+   - `verify.sh`: added `require_cmdline_opt` checking `clk_ignore_unused` and `pd_ignore_unused` presence in `CONFIG_CMDLINE` and `verify-image.strings`.
+   - Added negative controls testing each option: removing `clk_ignore_unused` or `pd_ignore_unused` from `CONFIG_CMDLINE` causes `require_cmdline_opt` to reject the configuration.
+
+### Build commands (build host)
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag16-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag16-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag16-out
+```
+
+Paired baseline (`CONFIG_C2S_DIAG` off) built into `/tmp/opencode/c2s-diag16-base-out`:
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag16-base-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag16-base-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag16-base-out
+```
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag16, signed) | `/tmp/opencode/c2s-diag16-out/boot.img` | 61 865 984 | `b86972cc51d897613faaa2cec8c3486a7e8c9d8fe9650a49bc8450f8f1f43656` |
+| Image (diag16) | `/tmp/opencode/c2s-diag16-out/kbuild/arch/arm64/boot/Image` | 13 285 888 | `e53947ca4626f2d2c824397e7dfe9a877dbbf5ce104c904ded193bc4cf4cac6d` |
+| DTB | `/tmp/opencode/c2s-diag16-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 143 360 | `6544b0de6d1fd4ed05836f5a4344a1f15805d95541c9d713acc3d86e4776c502` |
+| initramfs | `/tmp/opencode/c2s-diag16-out/work/initramfs.cpio.gz` | 3 371 885 | `eedeeca08a100386671c4ef0ef29efbf3737d5a5bb0bdaaff0ba8af60155ed6e` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag16-base-out/boot.img` | 61 865 984 | `5096babaf157901eda3b5a2a1340c186e4ffaeacfbd29a79786d8f3fec35c0fe` |
+| Image (baseline) | `/tmp/opencode/c2s-diag16-base-out/kbuild/arch/arm64/boot/Image` | 13 154 816 | `c45c4cbd42652939d9551137c68e5a8d11c44cddb923a82534168acd22757024` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 143 360 B == kbuild DTB.
+
+### Host evidence
+
+* `check-c-milestone-bands.py` on diag16 vmlinux: **PASS (20 milestone call site(s) verified)**.
+* `check-c-milestone-bands.py --expect-none` on baseline vmlinux: **PASS (no milestone call sites; baseline build)**.
+* `check-c2s-paint-paths.py`: **PASS (34 paint-path and console properties verified)**.
+* `check-platform-device-collisions.py`: **PASS (0 collisions across 9 merged DTBs)**.
+* `fault-injection.sh`: **10 passed, 0 failed**.
+* `test-flash-boot.sh`: **14 passed, 0 failed** (positive and all negative control tests verified).
+* `verify.sh`: **312 passed, 0 failed** on diag16; **312 passed, 0 failed** on baseline.
+* `CONFIG_SCSI` negative control: unset CONFIG_SCSI rejected by require_cfg.
+* `CONFIG_UNIX` negative control: unset CONFIG_UNIX rejected by require_cfg.
+* `clk_ignore_unused` negative control: missing clk_ignore_unused rejected by require_cmdline_opt.
+* `pd_ignore_unused` negative control: missing pd_ignore_unused rejected by require_cmdline_opt.

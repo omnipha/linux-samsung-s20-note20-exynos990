@@ -56,7 +56,7 @@ CONFIG_LOCALVERSION="-c2s-rescue"
 # that one write reaches both consoles and `dmesg`; devkmsg_write()
 # (kernel/printk/printk.c) ratelimits /dev/kmsg writes unless this is
 # set, and init lines would be dropped silently.
-CONFIG_CMDLINE="console=ttyGS0 loglevel=8 ignore_loglevel panic=0 panic_on_oops=1 fbcon=font:TER16x32 console=tty0 printk.devkmsg=on"
+CONFIG_CMDLINE="console=ttyGS0 loglevel=8 ignore_loglevel panic=0 panic_on_oops=1 clk_ignore_unused pd_ignore_unused fbcon=font:TER16x32 console=tty0 printk.devkmsg=on"
 CONFIG_CMDLINE_FORCE=y
 CONFIG_PANIC_TIMEOUT=0
 # Compiled-in fonts: without CONFIG_FONTS only the autoselected default
