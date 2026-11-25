@@ -2121,3 +2121,56 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * Gate: `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR` present in `exynos990_ufs_drvs`.
 * Negative control: missing `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR` rejected.
 
+---
+
+## Candidate diag22 (Issue #20): UFS Recovery from OCS=1 and Timeout Freeze
+
+### Hardware Diagnostic Findings from diag21 (19:06)
+`diag21` was flashed to hardware via TWRP (hash `3de2fe94...`). Rootfs boot and switch_root executed to `/sbin/init`.
+- `saved_err=0x0`: `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL` completely resolved `SYSTEM_BUS_FATAL_ERROR 0x20000`.
+- New failure mode observed at t ≈ 210s:
+  - `UPIU[20] Transfer Request Descriptor`
+  - `OCS error from controller = 1 for tag 16` (`OCS_INVALID_CMD_TABLE_ATTR`)
+  - `task_abort[0]=0x15 cnt=1`
+  - `dev_reset[0..3]=0xffffff92` (-110 `ETIMEDOUT`) total cnt=4
+  - `No record of host_reset`, error handler loop with 4 outstanding requests, last line `phy cal L1 pll_lock=0x72`.
+
+### Root Cause Analysis & Solution
+1. **Broken Request List Clear Quirk (`UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR`)**:
+   - In standard UFSHCI, clearing a slot writes `~(1 << tag)` to `REG_UTP_TRANSFER_REQ_LIST_CLEAR` (active low: writing `0` clears the bit, `1` leaves running slots untouched).
+   - With `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR`, the driver inverts the mask: `mask = ~mask; writel(~mask) = writel(mask)` -> writes `(1 << tag)`.
+   - On Exynos 990, standard active-low semantics apply. Writing `(1 << tag)` places `0`s on all *other* running tags, corrupting active command table pointers and PRDT descriptors for in-flight requests. This directly produced `OCS error = 1` (`OCS_INVALID_CMD_TABLE_ATTR`) on parallel slots like tag 16.
+   - In `ref/z3s-mainline-linux` (`z3s`), `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR` is NOT present (`linux990-working-tree.patch:1798-1810`).
+2. **GS101-Specific `.post_link` and `.pre_pwr_change` UIC Hooks**:
+   - `c2s` previously imported `exynos990_ufs_post_link` and `exynos990_ufs_pre_pwr_change` from Google Tensor GS101, which configured non-standard UniPro MIB overrides (`0x15D2`, `0x15D3`, `PA_SAVECONFIGTIME`) and UniPro L2 power mode timers (`8064`, `28224`, `20160`).
+   - In `ref/z3s-mainline-linux` (`SESSION4_FINDINGS.md:149`), both `.post_link` and `.pre_pwr_change` were explicitly evaluated and set to `NULL` as they interfere with Exynos 990 UniPro link training and power transitions.
+3. **Missing `.device_reset` Hook in `ufs_hba_exynos_ops`**:
+   - When recovery attempted `dev_reset`, it timed out with `-110` (`0xffffff92`, `ETIMEDOUT`) because no device reset callback was registered in `ufs_hba_variant_ops`.
+   - `exynos_ufs_dev_hw_reset()` (pulsing `HCI_GPIO_OUT` bit 0) was present in `ufs-exynos.c:1544` but unhooked. Wrapping and exposing this as `.device_reset = exynos_ufs_device_reset` provides clean hardware reset during `eh_fatal` or task aborts.
+
+### Implementation
+Updated `drivers/ufs/host/ufs-exynos.c`:
+* Removed `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR` from `exynos990_ufs_drvs.quirks`.
+* Retained `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL` in `exynos990_ufs_drvs.quirks`.
+* Removed `exynos990_ufs_post_link` and `exynos990_ufs_pre_pwr_change` hooks and functions from `exynos990_ufs_drvs`.
+* Added `exynos_ufs_device_reset()` hook to `ufs_hba_exynos_ops.device_reset`.
+
+### Artifacts (build host, `/tmp/opencode/c2s-diag22-out`)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `boot.img` (diag22, signed) | 61,865,984 B | `4e85e732283e12b22525a6b862d78a85f7cab11b2d7d931dfe44e1d3477823cc` |
+| `Image` (diag22) | 15,092,224 B | `0a134bca8e72b7a4d604153351041a53ee63862672c09f119ee06233304d3faa` |
+| `DTB` | 149,113 B | `d960900a96ed64b86fdc01efae65a8c42cfdf0b753dca46aa132696697d31f89` |
+| `initramfs` | 3,374,131 B | `d12fb0499363bb9f5c262b5f14380deedc52c8f0f7f804b8fbd8bfdd6e1e90c8` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 149,113 B == kbuild DTB.
+
+### Verification
+* `verify.sh`: **417 passed, 0 failed**.
+* Gate: `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL` present in `exynos990_ufs_drvs`.
+* Gate: `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR` absent from `exynos990_ufs_drvs`.
+* Gate: `exynos990_ufs_drvs` post_link and pre_pwr_change absent.
+* Gate: `device_reset` callback wired in `ufs_hba_exynos_ops`.
+* Negative controls verified for all 4 gates.
+

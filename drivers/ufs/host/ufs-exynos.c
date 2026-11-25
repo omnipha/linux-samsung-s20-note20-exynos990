@@ -1550,6 +1550,12 @@ static void exynos_ufs_dev_hw_reset(struct ufs_hba *hba)
 	hci_writel(ufs, 1 << 0, HCI_GPIO_OUT);
 }
 
+static int exynos_ufs_device_reset(struct ufs_hba *hba)
+{
+	exynos_ufs_dev_hw_reset(hba);
+	return 0;
+}
+
 static void exynos_ufs_pre_hibern8(struct ufs_hba *hba, enum uic_cmd_dme cmd)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
@@ -2023,6 +2029,7 @@ static const struct ufs_hba_variant_ops ufs_hba_exynos_ops = {
 	.suspend			= exynos_ufs_suspend,
 	.resume				= exynos_ufs_resume,
 	.fill_crypto_prdt		= exynos_ufs_fmp_fill_prdt,
+	.device_reset			= exynos_ufs_device_reset,
 };
 
 static struct ufs_hba_variant_ops ufs_hba_exynosauto_vh_ops = {
@@ -2173,44 +2180,10 @@ static int exynos990_ufs_pre_link(struct exynos_ufs *ufs)
 	return 0;
 }
 
-static int exynos990_ufs_post_link(struct exynos_ufs *ufs)
-{
-	struct ufs_hba *hba = ufs->hba;
-
-	/* Adapt length: 0x15D2 and 0x15D3 to 0 */
-	ufshcd_dme_set(hba, UIC_ARG_MIB(0x15D2), 0);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(0x15D3), 0);
-
-	exynos_ufs_enable_dbg_mode(hba);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_SAVECONFIGTIME), 0x3e8);
-	exynos_ufs_disable_dbg_mode(hba);
-
-	return 0;
-}
-
-static int exynos990_ufs_pre_pwr_change(struct exynos_ufs *ufs,
-					struct ufs_pa_layer_attr *pwr)
-{
-	struct ufs_hba *hba = ufs->hba;
-
-	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA0), 12000);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA1), 32000);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA2), 16000);
-	unipro_writel(ufs, 8064, UNIPRO_DME_POWERMODE_REQ_LOCALL2TIMER0);
-	unipro_writel(ufs, 28224, UNIPRO_DME_POWERMODE_REQ_LOCALL2TIMER1);
-	unipro_writel(ufs, 20160, UNIPRO_DME_POWERMODE_REQ_LOCALL2TIMER2);
-	unipro_writel(ufs, 12000, UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER0);
-	unipro_writel(ufs, 32000, UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER1);
-	unipro_writel(ufs, 16000, UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER2);
-
-	return 0;
-}
-
 static const struct exynos_ufs_drv_data exynos990_ufs_drvs = {
 	.uic_attr		= &exynos990_uic_attr,
 	.quirks			= UFSHCD_QUIRK_PRDT_BYTE_GRAN |
 				  UFSHCI_QUIRK_SKIP_RESET_INTR_AGGR |
-				  UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR |
 				  UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR |
 				  UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL |
 				  UFSHCD_QUIRK_SKIP_DEF_UNIPRO_TIMEOUT_SETTING,
@@ -2220,8 +2193,6 @@ static const struct exynos_ufs_drv_data exynos990_ufs_drvs = {
 				  EXYNOS_UFS_OPT_TIMER_TICK_SELECT,
 	.drv_init		= exynosauto_ufs_drv_init,
 	.pre_link		= exynos990_ufs_pre_link,
-	.post_link		= exynos990_ufs_post_link,
-	.pre_pwr_change		= exynos990_ufs_pre_pwr_change,
 };
 
 static const struct exynos_ufs_drv_data exynosauto_ufs_drvs = {

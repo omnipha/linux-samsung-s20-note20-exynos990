@@ -2535,12 +2535,16 @@ else
 fi
 rm -f "${_neg_ev_md}"
 
-# ------------------------------------------------------------ UFS quirks verification (issue #20)
-section "ufs quirks verification (issue #20)"
+# ------------------------------------------------------------ UFS driver verification (issue #20)
+section "ufs driver verification (issue #20)"
 check "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL present in exynos990_ufs_drvs" \
-	grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -q "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL"
-check "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR present in exynos990_ufs_drvs" \
-	grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR"
+	sh -c 'grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+check "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR absent from exynos990_ufs_drvs" \
+	sh -c '! (grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+check "exynos990_ufs_drvs post_link and pre_pwr_change absent" \
+	sh -c '! (grep -A 20 "exynos990_ufs_drvs" "$1" | grep -E -q "\.(post_link|pre_pwr_change)")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+check "device_reset callback wired in ufs_hba_exynos_ops" \
+	sh -c 'grep -A 20 "ufs_hba_exynos_ops" "$1" | grep -q "\.device_reset[[:space:]]*=[[:space:]]*exynos_ufs_device_reset"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 
 # Negative control for UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL gate
 _neg_ufs_wb=$(mktemp)
@@ -2552,15 +2556,37 @@ else
 fi
 rm -f "${_neg_ufs_wb}"
 
-# Negative control for UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR gate
+# Negative control for UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR absence gate
 _neg_ufs_req=$(mktemp)
-grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR" > "${_neg_ufs_req}"
-if grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR" "${_neg_ufs_req}"; then
-	bad "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR negative control failed: pattern unexpectedly matched"
+grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" > "${_neg_ufs_req}"
+echo "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR" >> "${_neg_ufs_req}"
+if ! grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR" "${_neg_ufs_req}"; then
+	bad "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR negative control failed: simulated defect was not detected"
 else
-	ok "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR negative control: missing quirk is detected (gate is sensitive)"
+	ok "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR negative control: erroneous quirk presence is detected (gate is sensitive)"
 fi
 rm -f "${_neg_ufs_req}"
+
+# Negative control for post_link / pre_pwr_change absence gate
+_neg_ufs_hooks=$(mktemp)
+grep -A 20 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" > "${_neg_ufs_hooks}"
+echo ".post_link = exynos990_ufs_post_link," >> "${_neg_ufs_hooks}"
+if ! grep -E -q "\.(post_link|pre_pwr_change)" "${_neg_ufs_hooks}"; then
+	bad "exynos990_ufs_drvs post_link/pre_pwr_change negative control failed: simulated hook was not detected"
+else
+	ok "exynos990_ufs_drvs post_link/pre_pwr_change negative control: unwanted hook presence is detected (gate is sensitive)"
+fi
+rm -f "${_neg_ufs_hooks}"
+
+# Negative control for device_reset callback presence gate
+_neg_ufs_rst=$(mktemp)
+grep -A 20 "ufs_hba_exynos_ops" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "device_reset" > "${_neg_ufs_rst}"
+if grep -q "device_reset" "${_neg_ufs_rst}"; then
+	bad "ufs_hba_exynos_ops device_reset negative control failed: pattern unexpectedly matched"
+else
+	ok "ufs_hba_exynos_ops device_reset negative control: missing callback is detected (gate is sensitive)"
+fi
+rm -f "${_neg_ufs_rst}"
 
 # --------------------------------------------- stock DTBO overlay compatibility
 # sboot applies the stock dtbo.img entry for this board's hw_rev onto our dt
