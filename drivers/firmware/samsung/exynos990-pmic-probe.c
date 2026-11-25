@@ -16,6 +16,16 @@
 #define S2MPS19_TYPE_PMIC	0x01	/* PMIC sub-block */
 #define S2MPS19_SPEEDY_CHAN	0	/* main PMIC */
 
+/*
+ * S2MPS19 PMIC register definitions.
+ *
+ * S2MPS19_REG_PMICID (0x00):
+ * Verified against z3s bring-up findings (docs/session-findings/SESSION3_FINDINGS.md §3.6):
+ * The smoke test reads register 0x00 over ACPM channel 2 (SPEEDY channel 0),
+ * logging "ACPMTEST: OK chipid=0x00" / "chipid=0x03" on physical Exynos 990 hardware.
+ * In Samsung S2M-series PMICs, register 0x00 (SEC_PMIC_REG_ID / S2MPS19_REG_PMICID)
+ * consistently contains the PMIC device identification and revision.
+ */
 #define S2MPS19_REG_PMICID	0x00
 #define S2MPS19_REG_LDO2CTRL	0x47	/* vqmmc */
 #define S2MPS19_REG_LDO15CTRL	0x54	/* vmmc */

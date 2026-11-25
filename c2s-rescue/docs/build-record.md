@@ -1950,3 +1950,88 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * DT GPU node negative control: missing gpu@18500000 node rejected.
 * DT G3D power-domain negative control: missing power-domain@15862200 node rejected.
 * `check-platform-device-collisions.py`: **0 name collisions across all 9 merged DTBs**.
+
+## diag19 candidate: Touch axis initialization & probe, GPU supply & OPP table, PMIC chip-id documentation (PACKAGE 2, issues #17, #18, #19)
+
+### Changes
+
+1. **#17 Touchscreen (s6sy761 & pinctrl)**:
+   - `drivers/input/touchscreen/s6sy761.c`:
+     - Initialized single-touch (`ABS_X`/`Y`) and multi-touch (`ABS_MT_POSITION_X`/`Y`) abs parameters from panel dimensions.
+     - Called `touchscreen_parse_properties` for both single and multi-touch to eliminate `"the axis have not been set"` warning.
+     - Enabled sensing at power-on (`S6SY761_SENSE_ON`) in `s6sy761_power_on` so touch interrupts fire without requiring userspace input device open.
+     - Added dynamic-debug/info logging across initialization, open/close, and IRQ handling.
+   - `arch/arm64/configs/c2s_rescue_diag_defconfig` & `c2s_rescue_defconfig`: enabled `CONFIG_DYNAMIC_DEBUG=y`.
+   - `arch/arm64/boot/dts/exynos/exynos990-c2s.dts`: added `attn_irq: attn-irq-pins` (`gpa1-0`, `EXYNOS_PIN_FUNC_EINT`, pull none, drive LV1) in `&pinctrl_alive` and attached `pinctrl-names = "default"; pinctrl-0 = <&attn_irq>;` to `&touchscreen`.
+   - `c2s-rescue/initramfs/usr/sbin/c2s-touch-probe`: added safe, read-only diagnostic tool (dmesg, /proc/interrupts, regulator states, gpio debugfs, i2c bus scan, input devices).
+2. **#18 GPU Mali-G77 (G3D supply regulator, OPP table, devfreq handling)**:
+   - `arch/arm64/boot/dts/exynos/exynos990-c2s.dts`:
+     - Added fixed-regulator `g3d_reg: regulator-g3d` matching `s_vdd_buck1` (800000 uV, always-on, boot-on).
+     - Added `gpu_opp_table: opp-table-gpu` (`operating-points-v2`) with 8 frequencies (156 to 832 MHz) and 800000 uV supply matching stock `gpu_dvfs_table`.
+     - Attached `mali-supply = <&g3d_reg>;` and `operating-points-v2 = <&gpu_opp_table>;` to `&gpu` (`gpu@18500000`).
+   - `drivers/gpu/drm/panfrost/panfrost_device.c`: made devfreq and regulator initialization non-fatal, ensuring GPU probe succeeds even if dynamic frequency scaling encounters errors.
+   - `c2s-rescue/initramfs/usr/sbin/c2s-gpu-probe`: added safe, read-only GPU probe script (dmesg, /sys/class/devfreq, /dev/dri/renderD128, /sys/class/drm, regulators).
+3. **#19 PMIC S2MPS19 Chip-ID Offset Verification**:
+   - `drivers/firmware/samsung/exynos990-pmic-probe.c`: documented register offset `0x00` (`S2MPS19_REG_PMICID`) against z3s bring-up records (`SESSION3_FINDINGS.md` §3.6) and Samsung S2M PMIC architecture.
+   - `c2s-rescue/docs/evidence.md`: added detailed verification section confirming offset `0x00` on physical hardware (`ACPMTEST: OK chipid=0x00` / `0x03`).
+4. **Verification gates**:
+   - Config gate and negative control for `CONFIG_DYNAMIC_DEBUG`.
+   - Initramfs archive gates and negative controls for `/usr/sbin/c2s-touch-probe` and `/usr/sbin/c2s-gpu-probe` (mode 0755, root-owned).
+   - DT gates and negative controls for `touchscreen` (`pinctrl-0`, `touchscreen-size-x`, `touchscreen-size-y`), `gpu` (`mali-supply`, `operating-points-v2`), and `regulator-g3d` (`s_vdd_buck1`, `opp-table-gpu`).
+   - Source code gates and negative controls for `S2MPS19_REG_PMICID` definition and `evidence.md` PMIC documentation.
+
+### Build commands (build host)
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag19-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag19-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag19-out
+```
+
+Paired baseline (`CONFIG_C2S_DIAG` off) built into `/tmp/opencode/c2s-diag19-base-out`:
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag19-base-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag19-base-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag19-base-out
+```
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag19, signed) | `/tmp/opencode/c2s-diag19-out/boot.img` | 61 865 984 | `ee450e7348b48be712aa7844bb820ed0840d48cfeb2c4451b1bbc285424e31c3` |
+| Image (diag19) | `/tmp/opencode/c2s-diag19-out/kbuild/arch/arm64/boot/Image` | 14 275 072 | `bb3d304604a9d8394a071791150e1f2b94774c927a87c71f658d584a89656210` |
+| DTB | `/tmp/opencode/c2s-diag19-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 149 113 | `d960900a96ed64b86fdc01efae65a8c42cfdf0b753dca46aa132696697d31f89` |
+| initramfs | `/tmp/opencode/c2s-diag19-out/work/initramfs.cpio.gz` | 3 373 089 | `b13ffdec751c55fbd2801b885d6d93df285d72c1ec442f7f0e3c2cb83e91fc20` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag19-base-out/boot.img` | 61 865 984 | `da394b07c52c1ea93401df4da4990f2c67ccda43fe62f9bf7b250bd377b22556` |
+| Image (baseline) | `/tmp/opencode/c2s-diag19-base-out/kbuild/arch/arm64/boot/Image` | 14 141 952 | `1a86f76c7c2fa6adc0713814ede657f0acb1f6ab7402c9e493480faae6087c3b` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 149 113 B == kbuild DTB.
+
+### Host evidence
+
+* `verify.sh`: **380 passed, 0 failed** on diag19; **380 passed, 0 failed** on baseline.
+* `CONFIG_DYNAMIC_DEBUG` negative control: unset symbol rejected.
+* `c2s-touch-probe` negative control: missing binary rejected.
+* `c2s-gpu-probe` negative control: missing binary rejected.
+* DT touch pinctrl negative control: missing `attn-irq` pinctrl rejected.
+* DT touch size negative control: missing `touchscreen-size-x` rejected.
+* DT GPU mali-supply negative control: missing `mali-supply` rejected.
+* DT GPU OPP negative control: missing `operating-points-v2` rejected.
+* DT G3D regulator negative control: missing `s_vdd_buck1` rejected.
+* `S2MPS19_REG_PMICID` negative control: missing definition rejected.
+* `evidence.md` PMIC documentation negative control: missing documentation rejected.
+* `check-platform-device-collisions.py`: **0 name collisions across all 9 merged DTBs**.

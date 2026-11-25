@@ -2411,6 +2411,33 @@ check "reg_dummy supply on usbdrd" \
 check "DTB carries a /__symbols__ node (sboot libufdt requirement)" \
 	grep -qE "^[[:space:]]*__symbols__ \{" "${DTB_TXT}"
 
+# ------------------------------------------------------------ PMIC / ACPM (issue #19)
+section "pmic / acpm chip-id verification (issue #19)"
+check "S2MPS19_REG_PMICID defined as 0x00 in exynos990-pmic-probe.c" \
+	grep -qE '^#define[[:space:]]+S2MPS19_REG_PMICID[[:space:]]+0x00' "${REPO_DIR}/drivers/firmware/samsung/exynos990-pmic-probe.c"
+check "evidence.md documents S2MPS19 chip-id offset 0x00 against SESSION3_FINDINGS.md" \
+	grep -q "S2MPS19 PMIC Chip-ID Register Offset Verification" "${REPO_DIR}/c2s-rescue/docs/evidence.md"
+
+# Negative control for S2MPS19_REG_PMICID gate
+_neg_pmic_c=$(mktemp)
+grep -v "S2MPS19_REG_PMICID" "${REPO_DIR}/drivers/firmware/samsung/exynos990-pmic-probe.c" > "${_neg_pmic_c}"
+if grep -qE '^#define[[:space:]]+S2MPS19_REG_PMICID[[:space:]]+0x00' "${_neg_pmic_c}"; then
+	bad "S2MPS19_REG_PMICID negative control failed: pattern unexpectedly matched"
+else
+	ok "S2MPS19_REG_PMICID negative control: missing definition is detected (gate is sensitive)"
+fi
+rm -f "${_neg_pmic_c}"
+
+# Negative control for evidence.md gate
+_neg_ev_md=$(mktemp)
+grep -v "S2MPS19 PMIC Chip-ID" "${REPO_DIR}/c2s-rescue/docs/evidence.md" > "${_neg_ev_md}"
+if grep -q "S2MPS19 PMIC Chip-ID Register Offset Verification" "${_neg_ev_md}"; then
+	bad "evidence.md PMIC documentation negative control failed: pattern unexpectedly matched"
+else
+	ok "evidence.md PMIC documentation negative control: missing documentation is detected (gate is sensitive)"
+fi
+rm -f "${_neg_ev_md}"
+
 # --------------------------------------------- stock DTBO overlay compatibility
 # sboot applies the stock dtbo.img entry for this board's hw_rev onto our dt
 # slot FDT before booting.  Each entry's /__fixups__ must resolve through our

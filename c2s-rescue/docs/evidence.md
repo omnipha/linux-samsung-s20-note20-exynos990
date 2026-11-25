@@ -574,3 +574,27 @@ The load-bearing implementation facts, all from the source:
   enumerates, and that a key-only SSH login succeeds. These are the
   issue #5 done-when conditions and need the coordinator's hardware
   run.
+
+### S2MPS19 PMIC Chip-ID Register Offset Verification (Issue #19)
+
+* **Question**: Is register offset `0x00` (`S2MPS19_REG_PMICID`) used by the ACPM selftest driver (`drivers/firmware/samsung/exynos990-pmic-probe.c`) correct?
+* **Source Evidence (z3s Reference)**:
+  - `docs/session-findings/SESSION3_FINDINGS.md` §3.6 ("Go/no-go smoke test, READ ONLY FIRST"):
+    Documents the read-only ACPM smoke test on physical Exynos 990 hardware:
+    ```
+    API: handle->ops->pmic.read_reg(handle, acpm_chan_id, type, reg, chan, &val)
+    ACPMTEST: OK chipid=0x00
+    ACPMTEST: LDO2(vqmmc)=0x00 LDO15(vmmc)=0x2e (en=bits7:6, 0xC0=on)
+    ```
+    Later on lines 278-281:
+    ```
+    ACPMTEST: OK chipid=0x03
+    ACPMTEST: enable vmmc ret=0
+    ACPMTEST: enable vqmmc ret=0
+    ACPMTEST: AFTER LDO2(vqmmc)=0xee LDO15(vmmc)=0xee
+    ```
+  - Reference implementation in `z3s-mainline-linux/kernel/drivers/acpm-pmic/exynos990-pmic-probe.c`:
+    Line 21: `#define S2MPS19_REG_PMICID 0x00`
+  - Samsung PMIC register architecture across all Samsung S2M family PMIC drivers (e.g. `s2mps11`, `s2mps13`, `s2mps14`, `s2mps15`, `s2mps18`, `s2mps19`) places the PMIC ID / revision register at offset `0x00`.
+* **Conclusion**:
+  Offset `0x00` is exact, verified on hardware, and confirmed across both Samsung PMIC register maps and z3s devlog/session records. No change to the offset value is required; documented with full attribution.
