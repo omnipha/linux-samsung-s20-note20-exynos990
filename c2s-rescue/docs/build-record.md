@@ -2083,3 +2083,41 @@ Package 4 preparation:
 * Negative control `build-rootfs.sh`: missing builder rejected.
 
 ---
+
+## Candidate diag21 (Issue #20): UFS SYSTEM_BUS_FATAL_ERROR (0x20000) Fix
+
+### Problem
+During sustained heavy writes (~6.4 GiB `c2s-root.img` write to `/dev/block/by-name/userdata` / `sda32`), the write hung in final fsync with `blk_mq_get_tag` starved in D-state.
+Kernel log reported:
+`ufshcd_check_errors saved_err 0x20000` (= `SYSTEM_BUS_FATAL_ERROR`, bit 17 of `REG_INTERRUPT_STATUS`), followed by `eh_fatal`. The error handler never completed.
+
+### Analysis against Reference Driver (`ref/z3s-mainline-linux` & upstream Exynos)
+1. **Write Booster Flush Quirk**:
+   Samsung UFS 3.0 devices (`KLUEG8UHDB-C2D1` rev 0090) engage Write Booster buffer flush by default unless `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL` is set. During massive raw writes (~6.4 GiB stream), the WB buffer saturates and the host controller attempts manual buffer flush concurrently with continuous DMA write bursts, resulting in `SYSTEM_BUS_FATAL_ERROR` on the AXI bus.
+2. **Clear Request List Quirk**:
+   When the fatal error occurs, `ufshcd_err_handler` attempts `ufshcd_utrl_clear()` to abort pending requests. On Exynos controllers, register polarity is inverted, requiring `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR`. Without this quirk, slot clear operations fail, freezing the error recovery thread and starving all blk-mq tags.
+3. Upstream Exynos drivers (`exynos_ufs_drvs`, `gs101_ufs_drvs`, and `exynos9820_ufs_drvs`) all include both `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL` and `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR`.
+
+### Implementation
+Updated `drivers/ufs/host/ufs-exynos.c` (`exynos990_ufs_drvs.quirks`):
+* Added `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL`
+* Added `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR`
+
+### Artifacts (build host, `/tmp/opencode/c2s-diag21-out`)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `boot.img` (diag21, signed) | 61,865,984 B | `3de2fe94bc66e2c58d5d586e376e9cbf249bcff001b0618289a4b7a30f38d39f` |
+| `Image` (diag21) | 15,092,224 B | `6dc32888364f349e83d8e8612dee730aa8dfdfb77a3a60d6792037968d53c69f` |
+| `DTB` | 149,113 B | `d960900a96ed64b86fdc01efae65a8c42cfdf0b753dca46aa132696697d31f89` |
+| `initramfs` | 3,374,131 B | `d12fb0499363bb9f5c262b5f14380deedc52c8f0f7f804b8fbd8bfdd6e1e90c8` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 149,113 B == kbuild DTB.
+
+### Verification
+* `verify.sh`: **411 passed, 0 failed**.
+* Gate: `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL` present in `exynos990_ufs_drvs`.
+* Negative control: missing `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL` rejected.
+* Gate: `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR` present in `exynos990_ufs_drvs`.
+* Negative control: missing `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR` rejected.
+

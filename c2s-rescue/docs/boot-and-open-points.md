@@ -333,4 +333,5 @@ Stage A (diag17, issues #13, #12): ACPM mailbox + S2MPS19 PMIC regulators and S2
 Stage B (diag18, issues #9, #10): DRM/KMS simpledrm (card0) and Panfrost Mali-G77 GPU ported; 351/351 host gates passed.
 Stage C (diag19, issues #17, #18, #19, #16): Flashed and booted on hardware over SSH via c2s-flash-boot; panfrost dummy supply resolved, mali-supply linked to s_vdd_buck1 (devfreq 156-832 MHz), s6sy761 touch axes configured (1440x3088), sensing enabled, ACPM chipid=0x00 verified; 380/380 host gates passed.
 Stage D (diag20, issue #8): Package 4 Debian arm64 rootfs + switch_root initramfs path + EXT4/CGROUP kernel configs; default rootfs boot menu with 20s rescue fallback; 409/409 host gates passed.
+Stage E (diag21, issue #20): UFS SYSTEM_BUS_FATAL_ERROR (0x20000) during heavy write to userdata (sda32) resolved by adding UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL and UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR to exynos990_ufs_drvs; 411/411 host gates passed.
 

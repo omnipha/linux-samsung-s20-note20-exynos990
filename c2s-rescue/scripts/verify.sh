@@ -2535,6 +2535,33 @@ else
 fi
 rm -f "${_neg_ev_md}"
 
+# ------------------------------------------------------------ UFS quirks verification (issue #20)
+section "ufs quirks verification (issue #20)"
+check "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL present in exynos990_ufs_drvs" \
+	grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -q "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL"
+check "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR present in exynos990_ufs_drvs" \
+	grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR"
+
+# Negative control for UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL gate
+_neg_ufs_wb=$(mktemp)
+grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL" > "${_neg_ufs_wb}"
+if grep -q "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL" "${_neg_ufs_wb}"; then
+	bad "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL negative control failed: pattern unexpectedly matched"
+else
+	ok "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL negative control: missing quirk is detected (gate is sensitive)"
+fi
+rm -f "${_neg_ufs_wb}"
+
+# Negative control for UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR gate
+_neg_ufs_req=$(mktemp)
+grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR" > "${_neg_ufs_req}"
+if grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR" "${_neg_ufs_req}"; then
+	bad "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR negative control failed: pattern unexpectedly matched"
+else
+	ok "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR negative control: missing quirk is detected (gate is sensitive)"
+fi
+rm -f "${_neg_ufs_req}"
+
 # --------------------------------------------- stock DTBO overlay compatibility
 # sboot applies the stock dtbo.img entry for this board's hw_rev onto our dt
 # slot FDT before booting.  Each entry's /__fixups__ must resolve through our
