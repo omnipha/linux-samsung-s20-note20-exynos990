@@ -1,0 +1,13 @@
+#%PAM-1.0
+# PAM stack for sudo-rs in the c2s rescue image.
+#
+# sudo-rs calls pam_start()/pam_authenticate()/pam_acct_mgmt()/pam_open_session()
+# unconditionally and aborts if the stack is missing ("sudo: PAM error:
+# Critical error - immediate abort").  The rescue image grants rights with
+# NOPASSWD rules, so no authentication module is needed: pam_permit always
+# succeeds.  All four stacks (auth / account / password / session) must be
+# present, otherwise sudo-rs fails with a PAM error.
+auth     required pam_permit.so
+account  required pam_permit.so
+password required pam_permit.so
+session  required pam_permit.so

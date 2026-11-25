@@ -93,9 +93,15 @@ asmlinkage phys_addr_t __init create_init_idmap(pgd_t *pg_dir, ptdesc_t clrmask)
 	phys_addr_t ptep = (phys_addr_t)pg_dir + PAGE_SIZE; /* MMU is off */
 	pgprot_t text_prot = PAGE_KERNEL_ROX;
 	pgprot_t data_prot = PAGE_KERNEL;
+#ifdef CONFIG_C2S_DIAG
+	pgprot_t dev_prot = __pgprot(PROT_DEVICE_nGnRE);
+#endif
 
 	pgprot_val(text_prot) &= ~clrmask;
 	pgprot_val(data_prot) &= ~clrmask;
+#ifdef CONFIG_C2S_DIAG
+	pgprot_val(dev_prot) &= ~clrmask;
+#endif
 
 	/* MMU is off; pointer casts to phys_addr_t are safe */
 	map_range(&ptep, (u64)_stext, (u64)__initdata_begin,
@@ -104,6 +110,48 @@ asmlinkage phys_addr_t __init create_init_idmap(pgd_t *pg_dir, ptdesc_t clrmask)
 	map_range(&ptep, (u64)__initdata_begin, (u64)_end,
 		  (phys_addr_t)__initdata_begin, data_prot, IDMAP_ROOT_LEVEL,
 		  (pte_t *)pg_dir, false, 0);
+
+#ifdef CONFIG_C2S_DIAG
+	/*
+	 * Issue #4 diagnostic (M2): map the three splash framebuffers
+	 * identically so the band painter in __primary_switched can reach
+	 * them while the initial ID map is still installed in TTBR0
+	 * (until cpu_uninstall_idmap() in setup_arch). The extra page
+	 * tables are budgeted via EARLY_IDMAP_DIAG_EXTRA_PAGES.
+	 */
+	map_range(&ptep, 0xf1000000ULL, 0xf1000000ULL + 0x10f6800ULL,
+		  0xf1000000ULL, data_prot, IDMAP_ROOT_LEVEL,
+		  (pte_t *)pg_dir, false, 0);
+	map_range(&ptep, 0xf9800000ULL, 0xf9800000ULL + 0x10f6800ULL,
+		  0xf9800000ULL, data_prot, IDMAP_ROOT_LEVEL,
+		  (pte_t *)pg_dir, false, 0);
+	map_range(&ptep, 0xfac00000ULL, 0xfac00000ULL + 0x10f6800ULL,
+		  0xfac00000ULL, data_prot, IDMAP_ROOT_LEVEL,
+		  (pte_t *)pg_dir, false, 0);
+
+	/*
+	 * Issue #4 diagnostic (trigger): identity-map the DECON0 SFRs as
+	 * device memory so the refresh trigger in __primary_switched (M2)
+	 * can reach 0x19050000 while the initial ID map is still in TTBR0.
+	 * DECON0_BASE_ADDR is 0x19050000 (lk3rd
+	 * platform/exynos9830/include/dpu/display_sfr.h:40; c2s uses the
+	 * exynos9830 platform, lk3rd target/c2s/rules.mk:4). Only the
+	 * registers we touch are needed: GLOBAL_CONTROL (0x0000),
+	 * SHADOW_REG_UPDATE_REQ (0x0060) and HW_SW_TRIG_CONTROL (0x0070),
+	 * all within the first page, so a single page suffices.
+	 *
+	 * Device memory is mandatory here (not cacheable normal): these are
+	 * side-effecting SFR reads/writes, and the M1 path (MMU off) already
+	 * accessed them as physical device memory via sboot/lk3rd. MAIR_EL1
+	 * index 4 (MT_DEVICE_nGnRE) is programmed unconditionally by
+	 * __cpu_setup before the MMU is on (arch/arm64/mm/proc.S:539,
+	 * MAIR_EL1_SET at proc.S:74), and M2 runs at EL1, so this
+	 * protection is valid at paint time.
+	 */
+	map_range(&ptep, 0x19050000ULL, 0x19050000ULL + PAGE_SIZE,
+		  0x19050000ULL, dev_prot, IDMAP_ROOT_LEVEL,
+		  (pte_t *)pg_dir, false, 0);
+#endif
 
 	return ptep;
 }

@@ -228,6 +228,11 @@ static const struct panfrost_model gpu_models[] = {
 	GPU_MODEL(g31, 0x7003,
 		GPU_REV(g31, 1, 0)),
 
+	/* Mali-G77 (Valhall gen1) - Exynos 990 / Galaxy S20 / Note20 Ultra. */
+	GPU_MODEL(g77, 0x9000,
+		GPU_REV(g77, 0, 0),
+		GPU_REV(g77, 0, 1)),
+
 	GPU_MODEL(g57, 0x9001,
 		GPU_REV(g57, 0, 0)),
 

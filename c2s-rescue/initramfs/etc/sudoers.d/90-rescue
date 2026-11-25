@@ -1,0 +1,11 @@
+# /etc/sudoers.d/90-rescue - passwordless sudo for the rescue image.
+#
+# rescue is the unprivileged SSH login account (uid 1000).  It exists so
+# that an SSH session is NOT root: the operator logs in as `rescue` and uses
+# `sudo -n` for privileged work, which is the documented acceptance check
+#   sudo -n id        -> uid=0(root)
+# root keeps a NOPASSWD rule too so the check also passes when the operator
+# logs in as root (root would otherwise be refused by sudo-rs, which has no
+# implicit root rule).
+rescue ALL=(ALL:ALL) NOPASSWD: ALL
+root ALL=(ALL:ALL) NOPASSWD: ALL

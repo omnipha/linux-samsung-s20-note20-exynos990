@@ -1,0 +1,137 @@
+
+/tmp/opencode/c2s-diag7-out/kbuild/vmlinux:     Dateiformat elf64-littleaarch64
+
+
+Disassembly of section .head.text:
+
+Disassembly of section .text:
+
+ffff80008037d8b0 <gether_connect>:
+ffff80008037d8b0:	d503233f 	paciasp
+ffff80008037d8b4:	a9bc7bfd 	stp	x29, x30, [sp, #-64]!
+ffff80008037d8b8:	910003fd 	mov	x29, sp
+ffff80008037d8bc:	a90153f3 	stp	x19, x20, [sp, #16]
+ffff80008037d8c0:	f9407014 	ldr	x20, [x0, #224]
+ffff80008037d8c4:	b40009b4 	cbz	x20, ffff80008037d9f8 <gether_connect+0x148>
+ffff80008037d8c8:	aa0003f3 	mov	x19, x0
+ffff80008037d8cc:	f9407400 	ldr	x0, [x0, #232]
+ffff80008037d8d0:	f9000014 	str	x20, [x0]
+ffff80008037d8d4:	f9407660 	ldr	x0, [x19, #232]
+ffff80008037d8d8:	97ffeb72 	bl	ffff8000803786a0 <usb_ep_enable>
+ffff80008037d8dc:	2a0003e1 	mov	w1, w0
+ffff80008037d8e0:	340000e0 	cbz	w0, ffff80008037d8fc <gether_connect+0x4c>
+ffff80008037d8e4:	37f80c21 	tbnz	w1, #31, ffff80008037da68 <gether_connect+0x1b8>
+ffff80008037d8e8:	f9400a80 	ldr	x0, [x20, #16]
+ffff80008037d8ec:	a94153f3 	ldp	x19, x20, [sp, #16]
+ffff80008037d8f0:	a8c47bfd 	ldp	x29, x30, [sp], #64
+ffff80008037d8f4:	d50323bf 	autiasp
+ffff80008037d8f8:	d65f03c0 	ret
+ffff80008037d8fc:	f9407a60 	ldr	x0, [x19, #240]
+ffff80008037d900:	f9000014 	str	x20, [x0]
+ffff80008037d904:	f9407a60 	ldr	x0, [x19, #240]
+ffff80008037d908:	97ffeb66 	bl	ffff8000803786a0 <usb_ep_enable>
+ffff80008037d90c:	2a0003e1 	mov	w1, w0
+ffff80008037d910:	350008a0 	cbnz	w0, ffff80008037da24 <gether_connect+0x174>
+ffff80008037d914:	a9025bf5 	stp	x21, x22, [sp, #32]
+ffff80008037d918:	52800055 	mov	w21, #0x2                   	// #2
+ffff80008037d91c:	f9400e80 	ldr	x0, [x20, #24]
+ffff80008037d920:	b9404800 	ldr	w0, [x0, #72]
+ffff80008037d924:	71000c1f 	cmp	w0, #0x3
+ffff80008037d928:	7a441802 	ccmp	w0, #0x4, #0x2, ne	// ne = any
+ffff80008037d92c:	54000708 	b.hi	ffff80008037da0c <gether_connect+0x15c>  // b.pmore
+ffff80008037d930:	91008280 	add	x0, x20, #0x20
+ffff80008037d934:	aa0003f6 	mov	x22, x0
+ffff80008037d938:	9407f8f2 	bl	ffff80008057bd00 <_raw_spin_lock>
+ffff80008037d93c:	f9407661 	ldr	x1, [x19, #232]
+ffff80008037d940:	2a1503e2 	mov	w2, w21
+ffff80008037d944:	9100a280 	add	x0, x20, #0x28
+ffff80008037d948:	97fffeca 	bl	ffff80008037d470 <prealloc>
+ffff80008037d94c:	35000760 	cbnz	w0, ffff80008037da38 <gether_connect+0x188>
+ffff80008037d950:	f9407a61 	ldr	x1, [x19, #240]
+ffff80008037d954:	2a1503e2 	mov	w2, w21
+ffff80008037d958:	9100e280 	add	x0, x20, #0x38
+ffff80008037d95c:	97fffec5 	bl	ffff80008037d470 <prealloc>
+ffff80008037d960:	350006c0 	cbnz	w0, ffff80008037da38 <gether_connect+0x188>
+ffff80008037d964:	aa1603e0 	mov	x0, x22
+ffff80008037d968:	9407f84e 	bl	ffff80008057baa0 <_raw_spin_unlock>
+ffff80008037d96c:	3943e260 	ldrb	w0, [x19, #248]
+ffff80008037d970:	3902a280 	strb	w0, [x20, #168]
+ffff80008037d974:	f9400e80 	ldr	x0, [x20, #24]
+ffff80008037d978:	f941c800 	ldr	x0, [x0, #912]
+ffff80008037d97c:	530c3000 	ubfx	w0, w0, #12, #1
+ffff80008037d980:	3902a680 	strb	w0, [x20, #169]
+ffff80008037d984:	b940fe60 	ldr	w0, [x19, #252]
+ffff80008037d988:	b9006e80 	str	w0, [x20, #108]
+ffff80008037d98c:	f9408e60 	ldr	x0, [x19, #280]
+ffff80008037d990:	f9003e80 	str	x0, [x20, #120]
+ffff80008037d994:	f9408a60 	ldr	x0, [x19, #272]
+ffff80008037d998:	f9003a80 	str	x0, [x20, #112]
+ffff80008037d99c:	aa1403e0 	mov	x0, x20
+ffff80008037d9a0:	9407f8d8 	bl	ffff80008057bd00 <_raw_spin_lock>
+ffff80008037d9a4:	f9000693 	str	x19, [x20, #8]
+ffff80008037d9a8:	f9400a80 	ldr	x0, [x20, #16]
+ffff80008037d9ac:	f9404c00 	ldr	x0, [x0, #152]
+ffff80008037d9b0:	36000340 	tbz	w0, #0, ffff80008037da18 <gether_connect+0x168>
+ffff80008037d9b4:	f9409261 	ldr	x1, [x19, #288]
+ffff80008037d9b8:	b4000061 	cbz	x1, ffff80008037d9c4 <gether_connect+0x114>
+ffff80008037d9bc:	aa1303e0 	mov	x0, x19
+ffff80008037d9c0:	d63f0020 	blr	x1
+ffff80008037d9c4:	aa1403e0 	mov	x0, x20
+ffff80008037d9c8:	9407f836 	bl	ffff80008057baa0 <_raw_spin_unlock>
+ffff80008037d9cc:	f9400a80 	ldr	x0, [x20, #16]
+ffff80008037d9d0:	94030a07 	bl	ffff8000804401ec <netif_carrier_on>
+ffff80008037d9d4:	529fefe1 	mov	w1, #0xff7f                	// #65407
+ffff80008037d9d8:	5280c000 	mov	w0, #0x601                 	// #1537
+ffff80008037d9dc:	72bfe001 	movk	w1, #0xff00, lsl #16
+ffff80008037d9e0:	97f2db80 	bl	ffff8000800347e0 <c2s_band>
+ffff80008037d9e4:	f9400a80 	ldr	x0, [x20, #16]
+ffff80008037d9e8:	f9404c01 	ldr	x1, [x0, #152]
+ffff80008037d9ec:	37000421 	tbnz	w1, #0, ffff80008037da70 <gether_connect+0x1c0>
+ffff80008037d9f0:	a9425bf5 	ldp	x21, x22, [sp, #32]
+ffff80008037d9f4:	17ffffbe 	b	ffff80008037d8ec <gether_connect+0x3c>
+ffff80008037d9f8:	a94153f3 	ldp	x19, x20, [sp, #16]
+ffff80008037d9fc:	928002a0 	mov	x0, #0xffffffffffffffea    	// #-22
+ffff80008037da00:	a8c47bfd 	ldp	x29, x30, [sp], #64
+ffff80008037da04:	d50323bf 	autiasp
+ffff80008037da08:	d65f03c0 	ret
+ffff80008037da0c:	b9406a80 	ldr	w0, [x20, #104]
+ffff80008037da10:	531f7815 	lsl	w21, w0, #1
+ffff80008037da14:	17ffffc7 	b	ffff80008037d930 <gether_connect+0x80>
+ffff80008037da18:	f9409661 	ldr	x1, [x19, #296]
+ffff80008037da1c:	b5fffd01 	cbnz	x1, ffff80008037d9bc <gether_connect+0x10c>
+ffff80008037da20:	17ffffe9 	b	ffff80008037d9c4 <gether_connect+0x114>
+ffff80008037da24:	f9407660 	ldr	x0, [x19, #232]
+ffff80008037da28:	b9003fe1 	str	w1, [sp, #60]
+ffff80008037da2c:	97ffe9f5 	bl	ffff800080378200 <usb_ep_disable>
+ffff80008037da30:	b9403fe1 	ldr	w1, [sp, #60]
+ffff80008037da34:	17ffffac 	b	ffff80008037d8e4 <gether_connect+0x34>
+ffff80008037da38:	aa1603e0 	mov	x0, x22
+ffff80008037da3c:	9407f819 	bl	ffff80008057baa0 <_raw_spin_unlock>
+ffff80008037da40:	f9407a60 	ldr	x0, [x19, #240]
+ffff80008037da44:	97ffe9ef 	bl	ffff800080378200 <usb_ep_disable>
+ffff80008037da48:	f9407660 	ldr	x0, [x19, #232]
+ffff80008037da4c:	97ffe9ed 	bl	ffff800080378200 <usb_ep_disable>
+ffff80008037da50:	92800160 	mov	x0, #0xfffffffffffffff4    	// #-12
+ffff80008037da54:	a9425bf5 	ldp	x21, x22, [sp, #32]
+ffff80008037da58:	a94153f3 	ldp	x19, x20, [sp, #16]
+ffff80008037da5c:	a8c47bfd 	ldp	x29, x30, [sp], #64
+ffff80008037da60:	d50323bf 	autiasp
+ffff80008037da64:	d65f03c0 	ret
+ffff80008037da68:	93407c20 	sxtw	x0, w1
+ffff80008037da6c:	17ffffa0 	b	ffff80008037d8ec <gether_connect+0x3c>
+ffff80008037da70:	aa1403e0 	mov	x0, x20
+ffff80008037da74:	52810401 	mov	w1, #0x820                 	// #2080
+ffff80008037da78:	97ffff5a 	bl	ffff80008037d7e0 <rx_fill>
+ffff80008037da7c:	b9004a9f 	str	wzr, [x20, #72]
+ffff80008037da80:	f9400a80 	ldr	x0, [x20, #16]
+ffff80008037da84:	f9400c00 	ldr	x0, [x0, #24]
+ffff80008037da88:	9401c452 	bl	ffff8000803eebd0 <netif_tx_wake_queue>
+ffff80008037da8c:	f9400a80 	ldr	x0, [x20, #16]
+ffff80008037da90:	a9425bf5 	ldp	x21, x22, [sp, #32]
+ffff80008037da94:	17ffff96 	b	ffff80008037d8ec <gether_connect+0x3c>
+
+Disassembly of section .rodata.text:
+
+Disassembly of section .init.text:
+
+Disassembly of section .exit.text:

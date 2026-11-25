@@ -28,9 +28,44 @@ CONFIG_ARCH_EXYNOS=y
 # The rescue build therefore uses a fixed local version suffix.
 CONFIG_LOCALVERSION="-c2s-rescue"
 # CONFIG_LOCALVERSION_AUTO is not set
-CONFIG_CMDLINE="console=tty0 loglevel=7 ignore_loglevel"
+# CONFIG_CMDLINE_FORCE: the bootloader cmdline (which the stock bootloader
+# supplies and which we do not control) is discarded, so every console
+# setting the rescue image needs must be in this string. In particular
+# fbcon=font:TER16x32 selects the Terminus 16x32 console font by name
+# (fb_console_setup() -> find_font(), drivers/video/fbdev/core/fbcon.c);
+# it is an *approach* for the on-screen readability target and must be
+# confirmed on the real framebuffer before it is reported as measured.
+#
+# console= order matters: the LAST console= token is the preferred
+# console (preferred_console in __add_preferred_console(),
+# kernel/printk/printk.c), i.e. what a later open of /dev/console gets:
+#   console=ttyGS0  USB gadget ACM serial port "ttyGS", index 0
+#                   (gs_console_device(), drivers/usb/gadget/function/
+#                   u_serial.c) - only exists once /init creates the
+#                   configfs ACM function, so it is a no-op during early
+#                   boot; without this entry register_console() fails to
+#                   enable it (try_enable_preferred_console() returns
+#                   -ENOENT) and nothing would ever reach the USB port.
+#                   Its CON_PRINTBUFFER then replays the boot log, so
+#                   kernel messages are readable over USB before any
+#                   network interface exists.
+#   console=tty0    stays LAST, so /dev/console keeps resolving to the
+#                   framebuffer console as before (display behaviour and
+#                   the existing console font gates are unchanged).
+# printk.devkmsg=on: /init feeds its own output into the kernel log so
+# that one write reaches both consoles and `dmesg`; devkmsg_write()
+# (kernel/printk/printk.c) ratelimits /dev/kmsg writes unless this is
+# set, and init lines would be dropped silently.
+CONFIG_CMDLINE="console=ttyGS0 loglevel=8 ignore_loglevel panic=0 panic_on_oops=1 clk_ignore_unused pd_ignore_unused fbcon=font:TER16x32 console=tty0 printk.devkmsg=on"
 CONFIG_CMDLINE_FORCE=y
+CONFIG_PANIC_TIMEOUT=0
+# Compiled-in fonts: without CONFIG_FONTS only the autoselected default
+# (8x16) exists and fbcon=font:TER16x32 would fall back to it silently.
+CONFIG_FONTS=y
+CONFIG_FONT_8x16=y
+CONFIG_FONT_TER16x32=y
 CONFIG_NET=y
+CONFIG_UNIX=y
 CONFIG_INET=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
@@ -38,14 +73,69 @@ CONFIG_INPUT_EVDEV=y
 CONFIG_KEYBOARD_GPIO=y
 CONFIG_REGULATOR=y
 CONFIG_REGULATOR_FIXED_VOLTAGE=y
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_SCSI_UFSHCD=y
+CONFIG_SCSI_UFSHCD_PLATFORM=y
+CONFIG_SCSI_UFS_EXYNOS=y
+CONFIG_PHY_SAMSUNG_UFS=y
+CONFIG_PARTITION_ADVANCED=y
+CONFIG_EFI_PARTITION=y
+CONFIG_DRM=y
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_DRM_PANFROST=y
 CONFIG_FB=y
-CONFIG_FB_SIMPLE=y
+# CONFIG_FB_SIMPLE is not set
 CONFIG_FRAMEBUFFER_CONSOLE=y
 CONFIG_USB_DWC3=y
 CONFIG_USB_GADGET=y
+# USB serial console: gs_console_init() registers ttyGS0 as a console
+# (u_serial.c) when /init creates the configfs ACM function instance;
+# together with console=ttyGS0 in CONFIG_CMDLINE this is the rescue
+# channel for kernel messages - independent of the display and of the
+# network path (see the CONFIG_CMDLINE comment below).
+CONFIG_U_SERIAL_CONSOLE=y
 CONFIG_USB_CONFIGFS=y
 CONFIG_USB_CONFIGFS_ACM=y
 CONFIG_USB_CONFIGFS_NCM=y
 CONFIG_USB_CONFIGFS_RNDIS=y
 CONFIG_TMPFS=y
 CONFIG_PRINTK_TIME=y
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_SCSI_UFSHCD=y
+CONFIG_SCSI_UFSHCD_PLATFORM=y
+CONFIG_SCSI_UFS_EXYNOS=y
+CONFIG_PHY_SAMSUNG_UFS=y
+CONFIG_PARTITION_ADVANCED=y
+CONFIG_EFI_PARTITION=y
+CONFIG_MSDOS_PARTITION=y
+CONFIG_POWER_RESET=y
+CONFIG_POWER_RESET_SYSCON=y
+CONFIG_SYSCON_REBOOT_MODE=y
+CONFIG_MAILBOX=y
+CONFIG_EXYNOS_MBOX=y
+CONFIG_EXYNOS_ACPM_PROTOCOL=y
+CONFIG_REGULATOR_S2MPS19_ACPM=y
+CONFIG_I2C=y
+CONFIG_I2C_CHARDEV=y
+CONFIG_I2C_EXYNOS5=y
+CONFIG_EXYNOS_USI=y
+CONFIG_REGULATOR_S2DOS05=y
+CONFIG_INPUT_TOUCHSCREEN=y
+CONFIG_TOUCHSCREEN_S6SY761=y
+
+# Minimal USB baseline: CONFIG_C2S_DIAG is deliberately NOT enabled here.
+# The diagnostic candidate writes milestone markers (M1/MMU-off, M2/MMU-on)
+# as plain stores into three framebuffer addresses from head.S and
+# identity-maps those ranges in the initial ID map (pi/map_range.c,
+# kernel-pgtable.h), i.e. it is display-specific code in the very first
+# instructions of the kernel. The USB-C rescue channel must not carry it.
+# The implementation itself is preserved: arch/arm64/kernel/head.S,
+# arch/arm64/pi/map_range.c, arch/arm64/include/asm/kernel-pgtable.h and
+# the Kconfig symbol are unchanged, and arch/arm64/configs/
+# c2s_rescue_diag_defconfig keeps the earlier diagnostic build reproducible.
+# c2s-rescue/scripts/verify.sh gates this from the final .config AND from
+# the built Image (instruction bytes / disassembly), not from the source.
+# CONFIG_C2S_DIAG is not set

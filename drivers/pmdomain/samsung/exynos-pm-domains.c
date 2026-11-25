@@ -81,8 +81,17 @@ static const struct exynos_pm_domain_config exynos5433_cfg = {
 	.local_pwr_cfg		= 0xf,
 };
 
+/* Exynos 990: the G3D (GPU) domain reports power state in bit 0 only.
+ * Polling for the 3-bit 0x7 mask never matches and the enable times out. */
+static const struct exynos_pm_domain_config exynos990_cfg = {
+	.local_pwr_cfg		= 0x1,
+};
+
 static const struct of_device_id exynos_pm_domain_of_match[] = {
 	{
+		.compatible = "samsung,exynos990-pd",
+		.data = &exynos990_cfg,
+	}, {
 		.compatible = "samsung,exynos4210-pd",
 		.data = &exynos4210_cfg,
 	}, {

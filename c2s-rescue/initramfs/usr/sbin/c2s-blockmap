@@ -1,0 +1,36 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+#
+# /usr/sbin/c2s-blockmap: create /dev/block/by-name/<partlabel> symlinks from GPT labels.
+#
+# Runs at init and exposed for manual invocation.
+# Uses sysfs (/sys/class/block/*/uevent) to extract PARTNAME and DEVNAME.
+# Busybox ash compatible.
+
+set -e
+
+SYSFS="${C2S_SYSFS_DIR:-/sys}"
+DEVFS="${C2S_DEV_DIR:-/dev}"
+DEST="${DEVFS}/block/by-name"
+
+mkdir -p "${DEST}"
+
+count=0
+for uevent in "${SYSFS}"/class/block/*/uevent; do
+    [ -f "${uevent}" ] || continue
+    partname=""
+    devname=""
+    while IFS='=' read -r key val || [ -n "${key}" ]; do
+        case "${key}" in
+            PARTNAME) partname="${val}" ;;
+            DEVNAME) devname="${val}" ;;
+        esac
+    done < "${uevent}"
+
+    if [ -n "${partname}" ] && [ -n "${devname}" ]; then
+        ln -sf "${DEVFS}/${devname}" "${DEST}/${partname}"
+        count=$((count + 1))
+    fi
+done
+
+echo "c2s-blockmap: mapped ${count} partition(s) into ${DEST}"

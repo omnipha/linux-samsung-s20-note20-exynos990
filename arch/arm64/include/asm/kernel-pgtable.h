@@ -58,8 +58,30 @@
 #define INIT_DIR_SIZE (PAGE_SIZE * (EARLY_PAGES(SWAPPER_PGTABLE_LEVELS, KIMAGE_VADDR, _end, EXTRA_PAGE) \
 				    + EARLY_SEGMENT_EXTRA_PAGES))
 
+#ifdef CONFIG_C2S_DIAG
+/*
+ * Issue #4 diagnostic: the initial ID map additionally covers three
+ * splash framebuffers (0xf1000000/0xf9800000/0xfac00000, each up to
+ * 0x10f6800 bytes, see c2s-rescue/docs/diag-milestones.md) plus the
+ * DECON0 SFR page (0x19050000) used by the refresh trigger.
+ *
+ * Measured cost with CONFIG_PGTABLE_LEVELS=5 and 4 KiB pages: the three
+ * splash framebuffers need 4 new page tables and DECON0 (0x19050000) 2
+ * more, i.e. 6 pages on top of the kernel image mapping. The reserve
+ * below is comfortably above that. (Counted by modelling map_range()'s
+ * recursion for the exact addresses above: the framebuffers share the
+ * PGD and one PUD entry with the kernel image and only need their own
+ * lower-level tables, DECON0 needs one PUD and one PMD table of its
+ * own.)
+ */
+#define EARLY_IDMAP_DIAG_EXTRA_PAGES	32
+#else
+#define EARLY_IDMAP_DIAG_EXTRA_PAGES	0
+#endif
+
 #define INIT_IDMAP_DIR_PAGES	(EARLY_PAGES(INIT_IDMAP_PGTABLE_LEVELS, KIMAGE_VADDR, kimage_limit, 1))
-#define INIT_IDMAP_DIR_SIZE	((INIT_IDMAP_DIR_PAGES + EARLY_IDMAP_EXTRA_PAGES) * PAGE_SIZE)
+#define INIT_IDMAP_DIR_SIZE	((INIT_IDMAP_DIR_PAGES + EARLY_IDMAP_EXTRA_PAGES + \
+				  EARLY_IDMAP_DIAG_EXTRA_PAGES) * PAGE_SIZE)
 
 #define INIT_IDMAP_FDT_PAGES	(EARLY_PAGES(INIT_IDMAP_PGTABLE_LEVELS, 0UL, UL(MAX_FDT_SIZE), 1) - 1)
 #define INIT_IDMAP_FDT_SIZE	((INIT_IDMAP_FDT_PAGES + EARLY_IDMAP_EXTRA_FDT_PAGES) * PAGE_SIZE)

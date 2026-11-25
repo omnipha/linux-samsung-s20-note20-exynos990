@@ -1,0 +1,20 @@
+
+vmlinux:     Dateiformat elf64-littleaarch64
+
+Disassembly of section .init.text:
+
+ffff8000806e0c00 <kernel_init>:
+ffff8000806e0c00:	d503233f 	paciasp
+ffff8000806e0c04:	a9bc7bfd 	stp	x29, x30, [sp, #-64]!
+ffff8000806e0c08:	910003fd 	mov	x29, sp
+ffff8000806e0c0c:	52809420 	mov	w0, #0x4a1                 	// #1185
+ffff8000806e0c10:	529ff801 	mov	w1, #0xffc0                	// #65472
+ffff8000806e0c14:	72bfe001 	movk	w1, #0xffc0, lsl #16
+ffff8000806e0c18:	94002200 	bl	ffff8000806e9400 <c2s_band_32>
+ffff8000806e0c1c:	94001000 	bl	ffff8000806e5000 <kernel_init_freeable>
+ffff8000806e0c20:	52809800 	mov	w0, #0x4c0                 	// #1216
+ffff8000806e0c24:	52981fe1 	mov	w1, #0xc0ff                	// #49407
+ffff8000806e0c28:	72bfe001 	movk	w1, #0xffc0, lsl #16
+ffff8000806e0c2c:	940021fb 	bl	ffff8000806e9400 <c2s_band_32>
+ffff8000806e0c30:	d50323bf 	autiasp
+ffff8000806e0c34:	d65f03c0 	ret

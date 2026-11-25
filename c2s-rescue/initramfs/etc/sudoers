@@ -1,0 +1,16 @@
+# /etc/sudoers - sudo-rs configuration for the c2s rescue image.
+#
+# sudo-rs (not the original sudo) parses this file.  Notes that matter for
+# this image:
+#   * `Defaults !authenticate` is NOT understood by sudo-rs and is rejected
+#     as an unknown setting - never add it here.
+#   * sudo-rs REQUIRES an active (uncommented) @includedir: without it the
+#     rescue account cannot be granted any right.
+#   * Password/PAM authentication is not used for granting: both accounts
+#     below are NOPASSWD, and dropbear is public-key only (password auth is
+#     compiled out of dropbear).  A minimal pam_permit stack in
+#     /etc/pam.d/sudo satisfies sudo-rs's mandatory pam_start() call.
+#
+# The sudoers file and every file in sudoers.d must be owned by root and
+# mode 0440, or sudo-rs refuses to load them.
+@includedir /etc/sudoers.d

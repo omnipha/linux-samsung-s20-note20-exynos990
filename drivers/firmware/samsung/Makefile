@@ -4,3 +4,4 @@ acpm-protocol-objs			:= exynos-acpm.o
 acpm-protocol-objs			+= exynos-acpm-pmic.o
 acpm-protocol-objs			+= exynos-acpm-dvfs.o
 obj-$(CONFIG_EXYNOS_ACPM_PROTOCOL)	+= acpm-protocol.o
+obj-$(CONFIG_EXYNOS_ACPM_PROTOCOL)	+= exynos990-pmic-probe.o

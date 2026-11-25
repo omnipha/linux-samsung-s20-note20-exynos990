@@ -1,0 +1,156 @@
+#!/bin/sh
+# c2s rescue boot menu: choose between SSH-only rescue (default) and
+# rescue with the unauthenticated USB telnet armed.
+#
+# Prints the selected mode ("rescue" or "telnet") as the ONLY line on
+# stdout; every other output (menu text, feedback) goes to the console
+# and to the kernel log (so a later SSH session can still show what was
+# selected at boot).
+#
+# Input channels (both explicit, both USB/console only - nothing here
+# opens a network listener):
+#   USB ACM serial (/dev/ttyGS0): type "telnet" -> telnet mode,
+#                                 type "rescue" or press Enter -> rescue
+#   gpio-keys evdev:               volume down = telnet,
+#                                  volume up / power = rescue
+# No input within RESCUE_MENU_TIMEOUT seconds -> rescue (telnet off).
+#
+# The device is NOT assumed to be /dev/input/event0: the gpio-keys
+# device is discovered through sysfs (device name and/or the key
+# capability bitmap) below $RESCUE_MENU_SYSFS (default /sys/class/input)
+# and the matching event node is $RESCUE_MENU_DEVDIR/eventN (default
+# /dev/input). Every key press is reported on the screen so the operator
+# sees that the keys are alive.
+#
+# Everything is overridable for host-side tests:
+#   RESCUE_MENU_TTY      default /dev/ttyGS0
+#   RESCUE_MENU_SYSFS    default /sys/class/input
+#   RESCUE_MENU_DEVDIR   default /dev/input
+#   RESCUE_MENU_DEV      explicit event node(s), comma separated;
+#                        bypasses discovery entirely
+#   RESCUE_MENU_TIMEOUT  default 30 (seconds)
+#   RESCUE_MENU_KEYS     helper path, default /usr/bin/rescue-menu-keys
+#
+# The event reading itself (persistent poll loop over all devices, raw
+# tty handling, press/release/repeat filtering) lives in
+# usr/bin/rescue-menu-keys so that it can be exercised as a shipped
+# binary by verify.sh.
+
+TTY="${RESCUE_MENU_TTY:-/dev/ttyGS0}"
+SYSFS="${RESCUE_MENU_SYSFS:-/sys/class/input}"
+DEVDIR="${RESCUE_MENU_DEVDIR:-/dev/input}"
+TIMEOUT="${RESCUE_MENU_TIMEOUT:-30}"
+KEYS="${RESCUE_MENU_KEYS:-/usr/bin/rescue-menu-keys}"
+
+# Menu text never goes to stdout (stdout carries the mode only) and never
+# to the serial line: the helper owns the tty, writes the banner itself and
+# filters the echo a terminal sends back.
+say() {
+    if [ -w /dev/console ]; then
+        echo "$*" > /dev/console 2>/dev/null || true
+    fi
+    echo "$*" >&2
+    echo "$*" > /dev/kmsg 2>/dev/null || true
+}
+
+# hex bitmap word test: does the sysfs capabilities/key bitmap advertise
+# any of the key codes 114..116 (KEY_VOLUMEDOWN/KEY_VOLUMEUP/KEY_POWER)?
+#
+# The kernel prints the bitmap as hex words, most significant word first
+# (input_print_bitmap(), drivers/input/input.c), and it SKIPS words that
+# are entirely zero. The c2s gpio-keys device has only keys 114/115/116,
+# so word 0 is empty and the whole output is the single token
+# "1c000000000000" (bits 50/51/52 of word 1). The token position can
+# therefore not be used - every token is scanned instead.
+#
+# Two layouts exist (input_bits_to_string(), drivers/input/input-compat.c):
+#   native 64 bit : one %lx token per 64 keys -> bits 50..52 set
+#                   (0x1c<<48 = "1c000000000000")
+#   32 bit compat : two %x tokens per 64 keys. Our busybox and this
+#                   script are 64 bit, so in_compat_syscall() is false
+#                   here and only the native layout can appear.
+# busybox ash evaluates arithmetic in decimal/0x only, so every token is
+# explicitly prefixed with 0x after the character check.
+has_volume_keys() {
+    local file="$1" tok
+    [ -r "$file" ] || return 1
+    for tok in $(cat "$file" 2>/dev/null); do
+        case "$tok" in
+            ''|*[!0-9a-fA-F]*) continue ;;
+        esac
+        tok="0x$tok"
+        [ $(( (tok >> 50) & 1 )) -eq 1 ] && return 0
+        [ $(( (tok >> 51) & 1 )) -eq 1 ] && return 0
+        [ $(( (tok >> 52) & 1 )) -eq 1 ] && return 0
+    done
+    return 1
+}
+
+# gpio-keys discovery over sysfs. Prints one event node per line.
+#
+# A device is accepted when its sysfs name looks like gpio-keys *and*
+# it actually advertises one of the volume/power keys (114/115/116) in
+# capabilities/key - the c2s gpio-keys node has exactly those three, so
+# a same-named device without them belongs to something else and must not
+# be used. If the capability file cannot be read at all, the name match
+# is enough.
+discover_gpio_keys() {
+    local d name n
+    for d in "$SYSFS"/event*; do
+        [ -d "$d" ] || continue
+        n=${d##*/event}
+        name=$(cat "$d/device/name" 2>/dev/null || true)
+        case "$name" in
+            *gpio-keys*|*gpio_keys*)
+                if [ -r "$d/device/capabilities/key" ] \
+                   && ! has_volume_keys "$d/device/capabilities/key"; then
+                    continue
+                fi
+                echo "$DEVDIR/event$n"
+                continue
+                ;;
+        esac
+        if has_volume_keys "$d/device/capabilities/key"; then
+            echo "$DEVDIR/event$n"
+        fi
+    done
+}
+
+DEVS=$(if [ -n "${RESCUE_MENU_DEV:-}" ]; then
+           echo "$RESCUE_MENU_DEV" | tr ',' '\n'
+       else
+           discover_gpio_keys
+       fi)
+
+if [ -z "$DEVS" ]; then
+    say "boot menu: no gpio-keys device found under $SYSFS (keys disabled)"
+else
+    say "boot menu: gpio-keys: $(echo "$DEVS" | tr '\n' ' ')"
+fi
+
+say ""
+say "c2s rescue boot menu (timeout ${TIMEOUT}s)"
+say "----------------------------"
+say " vol-up / power / enter : rescue  (USB SSH, key only)"
+say " vol-down or 'telnet'   : rescue + USB telnet (DEBUG)"
+say " timeout                : rescue  (telnet off)"
+say "----------------------------"
+say " selecting for ${TIMEOUT}s ..."
+
+if [ ! -x "$KEYS" ]; then
+    say "boot menu: $KEYS missing; default rescue mode"
+    echo "rescue"
+    exit 0
+fi
+
+# Build the argument list: the serial line (if it exists) plus every
+# discovered event node. Only the helper reads the input devices, so no
+# event can be consumed by (or lost between) a second reader.
+set --
+[ -e "$TTY" ] && set -- "$@" --tty "$TTY"
+if [ -n "$DEVS" ]; then
+    for d in $DEVS; do
+        [ -e "$d" ] && set -- "$@" "$d"
+    done
+fi
+exec "$KEYS" --timeout "$TIMEOUT" "$@"

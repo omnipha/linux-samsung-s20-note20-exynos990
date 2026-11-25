@@ -15,13 +15,55 @@
 #   - busybox telnetd, debug/rescue opt-in only: RESCUE_ENABLE_TELNET=1
 #     in /etc/rescue.conf AND the /etc/enable-telnet marker file.
 #
+# Console channels:
+#   - framebuffer console (/dev/console, console=tty0): what the kernel
+#     opened for us before exec'ing this script.
+#   - USB ACM serial console (ttyGS0, console=ttyGS0): registered by the
+#     kernel when the ACM function instance is created below
+#     (gs_console_init(), u_serial.c). Everything this PID 1 writes goes
+#     through /dev/kmsg, so a single write fans out to *both* consoles
+#     and is kept for `dmesg` over SSH. Kernel and init output are thus
+#     readable over the USB cable before, and completely without, the
+#     network path - and without any display being present.
+#
 # Shell: busybox ash (POSIX sh).
 
 export PATH=/usr/bin:/bin:/sbin:/usr/sbin
 
 . /etc/rescue.conf
 
-log() { echo "c2s-rescue: $*"; }
+# ------------------------------------------------------------------ log
+# Every init message goes into the kernel ring buffer via /dev/kmsg, from
+# where *all* enabled consoles print it: the framebuffer console
+# (console=tty0) and the USB ACM serial console (console=ttyGS0). The
+# USB console is the rescue channel, so init output must reach it even
+# when no display is attached and even when the network path is dead.
+#
+# /dev/kmsg is used on purpose instead of writing to /dev/ttyGS0
+# directly: the USB serial *console* drops what does not fit into its
+# 8 KiB buffer (u_serial.c counts the dropped bytes) instead of blocking,
+# while a plain write to the tty blocks once the 8 KiB TX buffer is full
+# and the host is not reading. A blocked PID 1 would take down the whole
+# rescue channel (dropbear, menu, supervision).
+#
+# The line stays in the ring buffer as well, so `dmesg` over SSH returns
+# the complete boot log - including the part that was dropped from the
+# 8 KiB USB console buffer.
+#
+# KMSG can be overridden (used by the host-side verification).
+KMSG="${KMSG:-/dev/kmsg}"
+
+log() {
+    if [ -w "${KMSG}" ]; then
+        echo "c2s-rescue: $*" > "${KMSG}" 2> /dev/null
+    fi
+    if [ -w /dev/console ]; then
+        echo "c2s-rescue: $*" > /dev/console 2> /dev/null
+    fi
+    echo "c2s-rescue: $*"
+}
+
+log "init start"
 
 # ---------------------------------------------------------------- mounts
 mount -t proc     proc     /proc
@@ -31,79 +73,41 @@ mkdir -p /dev/pts /run
 mount -t devpts   devpts   /dev/pts
 mount -t tmpfs    tmpfs    /run
 mount -t configfs configfs /sys/kernel/config
+log "configfs mounted"
 
 # --------------------------------------------------------------- gadget
-# u_ether defaults to "usb%d"; we pin deterministic names with the
-# ifname configfs attribute, which requires exactly one %d
-# (gether_set_ifname(), drivers/usb/gadget/function/u_ether.c) and may
-# only be written while the function is not linked into a configuration
-# (opts->refcnt == 0), i.e. before the ln -s below.
-G_UDC=""
-G_NCM_IF=""
-G_RNDIS_IF=""
+# The USB gadget state machine lives in /usr/lib/c2s-gadget.sh so the
+# exact shipped code can be exercised on the build host with controlled
+# faults (see c2s-rescue/scripts/fault-injection.sh). The machine binds
+# ONE gadget (ACM console + optional NCM/RNDIS) to the single UDC:
+#   status 0 = bound (ACM + whatever network functions linked)
+#   status 1 = gadget setup failed before bind
+#   status 2 = no UDC present  -> nothing enumerated on USB at all
+#   status 3 = every bind failed-> nothing enumerated on USB at all
+# In every case ACM is created and linked before NCM/RNDIS, so a network
+# function failure cannot take the ttyGS console channel with it.
+. /usr/lib/c2s-gadget.sh
+c2s_band_stage k4 0xffffc0ff
 
 # Supervised child PIDs (PID 1 must reap its children itself).
 DROPBEAR_PID=""
 TELNETD_PID=""
 CONSOLE_PID=""
 
-gadget_setup() {
-    cfg=/sys/kernel/config/usb_gadget/c2s
-
-    mkdir -p "$cfg" || { log "configfs gadget mkdir failed"; return 1; }
-
-    # Linux Foundation example VID/PID (Documentation/usb/gadget_configfs.rst);
-    # deliberately not a Samsung-assigned id.
-    echo 0x1d6b > "$cfg/idVendor"
-    echo 0x0104 > "$cfg/idProduct"
-    echo 0x0100 > "$cfg/bcdDevice"
-    echo 0x0200 > "$cfg/bcdUSB"
-
-    mkdir -p "$cfg/strings/0x409"
-    echo "c2s rescue"  > "$cfg/strings/0x409/product"
-    echo "omnipha"     > "$cfg/strings/0x409/manufacturer"
-    echo "c2s-rescue"  > "$cfg/strings/0x409/serialnumber"
-
-    mkdir -p "$cfg/configs/c.1/strings/0x409"
-    echo "c2s rescue (NCM+RNDIS+ACM)" \
-        > "$cfg/configs/c.1/strings/0x409/configuration"
-    # MaxPower is stored in mA; encode_bMaxPower() halves it for
-    # high-speed (composite.c), so 500 is the USB 2.0 maximum.
-    echo 500 > "$cfg/configs/c.1/MaxPower"
-
-    mkdir -p "$cfg/functions/ncm.usb0"   || return 1
-    mkdir -p "$cfg/functions/rndis.usb1" || return 1
-    mkdir -p "$cfg/functions/acm.usb2"   || return 1
-
-    echo "ncm%d"   > "$cfg/functions/ncm.usb0/ifname"   || return 1
-    echo "rndis%d" > "$cfg/functions/rndis.usb1/ifname" || return 1
-
-    ln -s "$cfg/functions/ncm.usb0"   "$cfg/configs/c.1/" || return 1
-    ln -s "$cfg/functions/rndis.usb1" "$cfg/configs/c.1/" || return 1
-    ln -s "$cfg/functions/acm.usb2"   "$cfg/configs/c.1/" || return 1
-
-    # Bind to the UDC last: this enumerates the gadget and registers
-    # the u_ether netdevs.
-    G_UDC=$(ls /sys/class/udc 2>/dev/null | head -n 1)
-    if [ -z "$G_UDC" ]; then
-        log "no UDC in /sys/class/udc (dwc3-exynos not probed?)"
-        return 1
-    fi
-    echo "$G_UDC" > "$cfg/UDC" || { log "UDC bind failed"; return 1; }
-
-    # Read the *actual* netdev names now that they are registered.
-    G_NCM_IF=$(cat "$cfg/functions/ncm.usb0/ifname")
-    G_RNDIS_IF=$(cat "$cfg/functions/rndis.usb1/ifname")
-    log "gadget bound to $G_UDC (ncm=$G_NCM_IF rndis=$G_RNDIS_IF)"
-    return 0
-}
-
 start_dropbear() {
+    log "dropbear start"
     # -R: generate host keys on first start (none are shipped in the image)
-    # -D: directory holding authorized_keys
     # -p: bound to the USB addresses only, never 0.0.0.0
     # -F: stay in the foreground so PID 1 can supervise the process
-    dropbear -R -F -E -b /etc/issue -D /root/.ssh -P /run/dropbear.pid \
+    #
+    # NOTE: no -D here.  dropbear's default authorized_keys directory is
+    # "~/.ssh", expanded per user from /etc/passwd, so each account gets
+    # its own <home>/.ssh/authorized_keys.  A single -D /root/.ssh would
+    # force every login to read root's key file and would make the
+    # unprivileged `rescue` account impossible (dropbear opens
+    # authorized_keys with seteuid() to the authenticating user, so a
+    # root-owned file is unreadable for a non-root login).
+    dropbear -R -F -E -b /etc/issue -P /run/dropbear.pid \
              -p "$RESCUE_NCM_ADDR:$RESCUE_SSH_PORT" \
              -p "$RESCUE_RNDIS_ADDR:$RESCUE_SSH_PORT" \
              >> /run/dropbear.log 2>&1 &
@@ -122,28 +126,139 @@ start_telnetd() {
     TELNETD_PID=$!
 }
 
-if gadget_setup; then
+GADGET_STATUS=1
+if c2s_gadget_setup; then
+    GADGET_STATUS=0
+else
+    GADGET_STATUS=$?
+fi
+
+case "${GADGET_STATUS}" in
+0)
     # Static IPv4 per function link: NCM (Linux/macOS) and RNDIS
     # (Windows) are separate links, so they get separate subnets to keep
     # routing unambiguous. Host side uses .2 of the matching subnet.
-    ip addr add "$RESCUE_NCM_ADDR/$RESCUE_PREFIX"   dev "$G_NCM_IF"
-    ip link set "$G_NCM_IF" up
-    ip addr add "$RESCUE_RNDIS_ADDR/$RESCUE_PREFIX" dev "$G_RNDIS_IF"
-    ip link set "$G_RNDIS_IF" up
-    log "addresses: $G_NCM_IF=$RESCUE_NCM_ADDR $G_RNDIS_IF=$RESCUE_RNDIS_ADDR"
-
-    if [ -s /root/.ssh/authorized_keys ]; then
-        chmod 0700 /root/.ssh
-        chmod 0600 /root/.ssh/authorized_keys
-        mkdir -p /etc/dropbear
-        start_dropbear
-        log "dropbear up on $RESCUE_NCM_ADDR:$RESCUE_SSH_PORT and $RESCUE_RNDIS_ADDR:$RESCUE_SSH_PORT (pubkey only)"
+    # Only interfaces that actually exist are configured - a network
+    # function that was skipped must not fail this step.
+    for _pair in "${C2S_NCM_IF}:${RESCUE_NCM_ADDR}" \
+                 "${C2S_RNDIS_IF}:${RESCUE_RNDIS_ADDR}"; do
+        _if="${_pair%%:*}"
+        _addr="${_pair#*:}"
+        [ -n "${_if}" ] || continue
+        ip addr add "$_addr/$RESCUE_PREFIX" dev "$_if" 2> /dev/null || \
+            log "ip addr add $_addr on $_if failed"
+        ip link set "$_if" up 2> /dev/null || \
+            log "ip link up $_if failed"
+    done
+    if [ -n "${C2S_NCM_IF}" ] || [ -n "${C2S_RNDIS_IF}" ]; then
+        log "addresses: ncm=${C2S_NCM_IF:-none}=$RESCUE_NCM_ADDR rndis=${C2S_RNDIS_IF:-none}=$RESCUE_RNDIS_ADDR"
     else
-        log "no /root/.ssh/authorized_keys: dropbear NOT started"
+        log "gadget bound without networking (ACM console only): no addresses"
     fi
-else
-    log "USB gadget setup failed: no network services"
-fi
+
+    if [ -n "${C2S_NCM_IF}" ] || [ -n "${C2S_RNDIS_IF}" ]; then
+        # Per-user authorized_keys: dropbear resolves "~/.ssh/authorized_keys"
+        # from the /etc/passwd home directory of the account that logs in.
+        # The image ships the operator key for `rescue` (uid 1000) and for
+        # `root`; either one is enough to bring dropbear up.  The directory
+        # mode is fixed here instead of via `dirname`: busybox's dirname
+        # applet is not linked into the initramfs.
+        RESCUE_KEYS=""
+        if [ -s /home/rescue/.ssh/authorized_keys ]; then
+            chmod 0700 /home/rescue/.ssh
+            chmod 0600 /home/rescue/.ssh/authorized_keys
+            RESCUE_KEYS="${RESCUE_KEYS} /home/rescue/.ssh/authorized_keys"
+        fi
+        if [ -s /root/.ssh/authorized_keys ]; then
+            chmod 0700 /root/.ssh
+            chmod 0600 /root/.ssh/authorized_keys
+            RESCUE_KEYS="${RESCUE_KEYS} /root/.ssh/authorized_keys"
+        fi
+        if [ -n "${RESCUE_KEYS}" ]; then
+            mkdir -p /etc/dropbear
+            start_dropbear
+            log "dropbear up on $RESCUE_NCM_ADDR:$RESCUE_SSH_PORT and $RESCUE_RNDIS_ADDR:$RESCUE_SSH_PORT (pubkey only); authorized_keys:${RESCUE_KEYS}"
+        else
+            log "no authorized_keys for rescue or root: dropbear NOT started"
+        fi
+    else
+        log "no USB network interface: dropbear NOT started (console-only stage)"
+    fi
+    ;;
+2)
+    log "USB stage 2: no UDC present - NOTHING enumerated; kernel/init messages only in the ring buffer (readable later over SSH if a UDC appears)"
+    ;;
+3)
+    log "USB stage 3: UDC present but every bind attempt failed - NOTHING enumerated"
+    ;;
+*)
+    log "USB stage ${GADGET_STATUS}: gadget setup failed before bind - NOTHING enumerated"
+    ;;
+esac
+
+# ------------------------------------------------------------- storage / UFS
+# Scan for block devices and create /dev/block/by-name/<partlabel> symlinks.
+# If block devices are present, run c2s-blockmap and log the mapped partitions;
+# otherwise log the exact status to /dev/kmsg so SSH/dmesg reflects hardware state.
+scan_storage() {
+    local blk_list=""
+    for b in /sys/class/block/*; do
+        [ -e "${b}" ] || continue
+        case "${b##*/}" in
+            ram*|loop*) ;;
+            *) blk_list="${blk_list} ${b##*/}" ;;
+        esac
+    done
+
+    if [ -n "${blk_list}" ]; then
+        log "storage: block devices found:${blk_list}"
+        if [ -x /usr/sbin/c2s-blockmap ]; then
+            local map_out
+            map_out=$(/usr/sbin/c2s-blockmap 2>&1)
+            log "storage: ${map_out}"
+        fi
+        if [ -L /dev/block/by-name/boot ]; then
+            local boot_target
+            boot_target=$(readlink -f /dev/block/by-name/boot 2>/dev/null || readlink /dev/block/by-name/boot)
+            log "storage: boot partition mapped: /dev/block/by-name/boot -> ${boot_target}"
+        else
+            log "storage: /dev/block/by-name/boot NOT found in partition map"
+        fi
+    else
+        log "storage: no physical block devices found in /sys/class/block (/proc/partitions empty)"
+    fi
+}
+scan_storage
+
+# ------------------------------------------------------------- boot menu
+# Selection between "rescue (SSH only, default)" and "rescue + USB
+# telnet". The stock c2s bootloader (sboot) offers no menu of its own,
+# so the menu lives in this initramfs, which sboot loads from the boot
+# image.
+#
+# Telnet never starts by default. It starts only when the operator
+# explicitly selected it in the menu (USB ACM serial "t" or volume
+# down), or when it was armed earlier with "rescue-telnet arm" (the
+# marker file). The marker wins over the menu, so an armed telnet
+# stays armed across reboots until it is disarmed.
+boot_menu() {
+    if [ -f /etc/enable-telnet ]; then
+        log "boot menu: telnet already armed (rescue-telnet arm); keeping it armed"
+        return 0
+    fi
+    mode=$(rescue-menu 2>>/dev/kmsg)
+    case "$mode" in
+        telnet)
+            : > /etc/enable-telnet
+            RESCUE_ENABLE_TELNET=1
+            log "boot menu: telnet mode selected (USB-only, until rescue-telnet disarm)"
+            ;;
+        *)
+            log "boot menu: rescue mode selected (telnet off)"
+            ;;
+    esac
+}
+boot_menu
 
 if telnet_armed; then
     start_telnetd

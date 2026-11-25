@@ -1,165 +1,131 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// s2dos05.c - Regulator driver for the Samsung s2dos05
-//
-// Copyright (C) 2025 Dzmitry Sankouski <dsankouski@gmail.com>
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Samsung S2DOS05 display sub-PMIC - touchscreen rail regulators
+ *
+ * The S2DOS05 sits on its own I2C bus and powers both the AMOLED panel
+ * (BUCK1/LDO1/LDO4/ELVSS) and the touchscreen rails
+ * (LDO2 = tsp_io 1.8V, LDO3 = tsp_avdd 3.0V).
+ *
+ * We deliberately expose ONLY the two touch rails. The panel rails are brought
+ * up by the bootloader and are what keeps the display alive; registering them
+ * here would let the regulator core disable them as "unused" and blank the
+ * screen. Enable/disable go through regmap_update_bits() on the single shared
+ * enable register, so only our own bits are ever modified.
+ */
 
-#include <linux/bug.h>
-#include <linux/delay.h>
-#include <linux/err.h>
-#include <linux/slab.h>
+#include <linux/bits.h>
+#include <linux/i2c.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
-#include <linux/interrupt.h>
-#include <linux/platform_device.h>
 #include <linux/regulator/driver.h>
-#include <linux/regulator/machine.h>
-#include <linux/regulator/of_regulator.h>
-#include <linux/mfd/samsung/core.h>
-#include <linux/regulator/s2dos05.h>
-#include <linux/i2c.h>
 
-struct s2dos05_data {
-	struct regmap *regmap;
-	struct device *dev;
-};
+#define S2DOS05_REG_EN		0x03
+#define S2DOS05_REG_LDO2_CFG	0x05
+#define S2DOS05_REG_LDO3_CFG	0x06
+#define S2DOS05_REG_MAX		0x11
 
-#define _BUCK(macro)	S2DOS05_BUCK##macro
-#define _buck_ops(num)	s2dos05_ops##num
-#define _LDO(macro)	S2DOS05_LDO##macro
-#define _REG(ctrl)	S2DOS05_REG##ctrl
-#define _ldo_ops(num)	s2dos05_ops##num
-#define _MASK(macro)	S2DOS05_ENABLE_MASK##macro
-#define _TIME(macro)	S2DOS05_ENABLE_TIME##macro
+#define S2DOS05_EN_LDO2		BIT(1)
+#define S2DOS05_EN_LDO3		BIT(2)
 
-#define BUCK_DESC(_name, _id, _ops, m, s, v, e, em, t, a) {	\
-	.name		= _name,				\
-	.id		= _id,					\
-	.ops		= _ops,					\
-	.of_match = of_match_ptr(_name),			\
-	.of_match_full_name = true,				\
-	.regulators_node = of_match_ptr("regulators"),		\
-	.type		= REGULATOR_VOLTAGE,			\
-	.owner		= THIS_MODULE,				\
-	.min_uV		= m,					\
-	.uV_step	= s,					\
-	.n_voltages	= S2DOS05_BUCK_N_VOLTAGES,		\
-	.vsel_reg	= v,					\
-	.vsel_mask	= S2DOS05_BUCK_VSEL_MASK,		\
-	.enable_reg	= e,					\
-	.enable_mask	= em,					\
-	.enable_time	= t,					\
-	.active_discharge_off = 0,				\
-	.active_discharge_on = S2DOS05_BUCK_FD_MASK,		\
-	.active_discharge_reg	= a,				\
-	.active_discharge_mask	= S2DOS05_BUCK_FD_MASK		\
-}
+#define S2DOS05_LDO_VSEL_MASK	0x7f
+#define S2DOS05_LDO_STEP_UV	25000
+#define S2DOS05_LDO2_MIN_UV	1500000
+#define S2DOS05_LDO3_MIN_UV	2700000
+#define S2DOS05_LDO_N_VOLTAGES	(S2DOS05_LDO_VSEL_MASK + 1)
 
-#define LDO_DESC(_name, _id, _ops, m, s, v, e, em, t, a) {	\
-	.name		= _name,				\
-	.id		= _id,					\
-	.ops		= _ops,					\
-	.of_match = of_match_ptr(_name),			\
-	.of_match_full_name = true,				\
-	.regulators_node = of_match_ptr("regulators"),		\
-	.type		= REGULATOR_VOLTAGE,			\
-	.owner		= THIS_MODULE,				\
-	.min_uV		= m,					\
-	.uV_step	= s,					\
-	.n_voltages	= S2DOS05_LDO_N_VOLTAGES,		\
-	.vsel_reg	= v,					\
-	.vsel_mask	= S2DOS05_LDO_VSEL_MASK,		\
-	.enable_reg	= e,					\
-	.enable_mask	= em,					\
-	.enable_time	= t,					\
-	.active_discharge_off = 0,				\
-	.active_discharge_on = S2DOS05_LDO_FD_MASK,		\
-	.active_discharge_reg	= a,				\
-	.active_discharge_mask	= S2DOS05_LDO_FD_MASK		\
-}
-
-static const struct regulator_ops s2dos05_ops = {
-	.list_voltage		= regulator_list_voltage_linear,
-	.map_voltage		= regulator_map_voltage_linear,
-	.is_enabled		= regulator_is_enabled_regmap,
+static const struct regulator_ops s2dos05_ldo_ops = {
 	.enable			= regulator_enable_regmap,
 	.disable		= regulator_disable_regmap,
+	.is_enabled		= regulator_is_enabled_regmap,
+	.list_voltage		= regulator_list_voltage_linear,
+	.map_voltage		= regulator_map_voltage_linear,
 	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
 	.set_voltage_sel	= regulator_set_voltage_sel_regmap,
-	.set_voltage_time_sel	= regulator_set_voltage_time_sel,
-	.set_active_discharge	= regulator_set_active_discharge_regmap,
 };
 
-static const struct regulator_desc regulators[S2DOS05_REGULATOR_MAX] = {
-		// name, id, ops, min_uv, uV_step, vsel_reg, enable_reg
-		LDO_DESC("ldo1", _LDO(1), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP1), _REG(_LDO1_CFG),
-			_REG(_EN), _MASK(_L1), _TIME(_LDO), _REG(_LDO1_CFG)),
-		LDO_DESC("ldo2", _LDO(2), &_ldo_ops(), _LDO(_MIN1),
-			_LDO(_STEP1), _REG(_LDO2_CFG),
-			_REG(_EN), _MASK(_L2), _TIME(_LDO), _REG(_LDO2_CFG)),
-		LDO_DESC("ldo3", _LDO(3), &_ldo_ops(), _LDO(_MIN2),
-			_LDO(_STEP1), _REG(_LDO3_CFG),
-			_REG(_EN), _MASK(_L3), _TIME(_LDO), _REG(_LDO3_CFG)),
-		LDO_DESC("ldo4", _LDO(4), &_ldo_ops(), _LDO(_MIN2),
-			_LDO(_STEP1), _REG(_LDO4_CFG),
-			_REG(_EN), _MASK(_L4), _TIME(_LDO), _REG(_LDO4_CFG)),
-		BUCK_DESC("buck", _BUCK(1), &_buck_ops(), _BUCK(_MIN1),
-			_BUCK(_STEP1), _REG(_BUCK_VOUT),
-			_REG(_EN), _MASK(_B1), _TIME(_BUCK), _REG(_BUCK_CFG)),
+#define S2DOS05_LDO(_id, _name, _min_uV, _en_mask, _vsel_reg)		\
+	{								\
+		.name		 = (_name),				\
+		.of_match	 = of_match_ptr(_name),			\
+		.regulators_node = of_match_ptr("regulators"),		\
+		.id		 = (_id),				\
+		.ops		 = &s2dos05_ldo_ops,			\
+		.type		 = REGULATOR_VOLTAGE,			\
+		.owner		 = THIS_MODULE,				\
+		.min_uV		 = (_min_uV),				\
+		.uV_step	 = S2DOS05_LDO_STEP_UV,			\
+		.n_voltages	 = S2DOS05_LDO_N_VOLTAGES,		\
+		.vsel_reg	 = (_vsel_reg),				\
+		.vsel_mask	 = S2DOS05_LDO_VSEL_MASK,		\
+		.enable_reg	 = S2DOS05_REG_EN,			\
+		.enable_mask	 = (_en_mask),				\
+	}
+
+static const struct regulator_desc s2dos05_regulators[] = {
+	S2DOS05_LDO(0, "ldo2", S2DOS05_LDO2_MIN_UV, S2DOS05_EN_LDO2,
+		    S2DOS05_REG_LDO2_CFG),
+	S2DOS05_LDO(1, "ldo3", S2DOS05_LDO3_MIN_UV, S2DOS05_EN_LDO3,
+		    S2DOS05_REG_LDO3_CFG),
 };
 
-static int s2dos05_pmic_probe(struct platform_device *pdev)
+static const struct regmap_config s2dos05_regmap_config = {
+	.reg_bits	= 8,
+	.val_bits	= 8,
+	.max_register	= S2DOS05_REG_MAX,
+};
+
+static int s2dos05_probe(struct i2c_client *client)
 {
-	struct device *dev = &pdev->dev;
-	struct sec_pmic_dev *iodev = dev_get_drvdata(pdev->dev.parent);
-	struct s2dos05_data *s2dos05;
 	struct regulator_config config = { };
-	unsigned int rdev_num = ARRAY_SIZE(regulators);
+	struct regmap *regmap;
+	unsigned int val;
+	int i, ret;
 
-	s2dos05 = devm_kzalloc(dev, sizeof(*s2dos05), GFP_KERNEL);
-	if (!s2dos05)
-		return -ENOMEM;
+	regmap = devm_regmap_init_i2c(client, &s2dos05_regmap_config);
+	if (IS_ERR(regmap))
+		return dev_err_probe(&client->dev, PTR_ERR(regmap),
+				     "failed to init regmap\n");
 
-	platform_set_drvdata(pdev, s2dos05);
+	/* Sanity-check the chip actually answers before registering rails. */
+	ret = regmap_read(regmap, S2DOS05_REG_EN, &val);
+	if (ret)
+		return dev_err_probe(&client->dev, ret,
+				     "S2DOS05 not responding\n");
 
-	s2dos05->regmap = iodev->regmap_pmic;
-	s2dos05->dev = dev;
-	if (!dev->of_node)
-		device_set_of_node_from_dev(dev, dev->parent);
+	dev_info(&client->dev, "S2DOS05 display sub-PMIC (EN=0x%02x)\n", val);
 
-	config.dev = dev;
-	config.driver_data = s2dos05;
+	config.dev = &client->dev;
+	config.regmap = regmap;
 
-	for (int i = 0; i < rdev_num; i++) {
-		struct regulator_dev *regulator;
+	for (i = 0; i < ARRAY_SIZE(s2dos05_regulators); i++) {
+		struct regulator_dev *rdev;
 
-		regulator = devm_regulator_register(&pdev->dev,
-						&regulators[i], &config);
-		if (IS_ERR(regulator)) {
-			return dev_err_probe(&pdev->dev, PTR_ERR(regulator),
-					"regulator init failed for %d\n", i);
-		}
+		rdev = devm_regulator_register(&client->dev,
+					       &s2dos05_regulators[i], &config);
+		if (IS_ERR(rdev))
+			return dev_err_probe(&client->dev, PTR_ERR(rdev),
+					     "failed to register %s\n",
+					     s2dos05_regulators[i].name);
 	}
 
 	return 0;
 }
 
-static const struct platform_device_id s2dos05_pmic_id[] = {
-	{ "s2dos05-regulator" },
-	{ },
+static const struct of_device_id s2dos05_of_match[] = {
+	{ .compatible = "samsung,s2dos05" },
+	{ }
 };
-MODULE_DEVICE_TABLE(platform, s2dos05_pmic_id);
+MODULE_DEVICE_TABLE(of, s2dos05_of_match);
 
-static struct platform_driver s2dos05_platform_driver = {
+static struct i2c_driver s2dos05_driver = {
 	.driver = {
-		.name = "s2dos05",
+		.name		= "s2dos05-regulator",
+		.of_match_table	= s2dos05_of_match,
 	},
-	.probe = s2dos05_pmic_probe,
-	.id_table = s2dos05_pmic_id,
+	.probe = s2dos05_probe,
 };
-module_platform_driver(s2dos05_platform_driver);
+module_i2c_driver(s2dos05_driver);
 
-MODULE_AUTHOR("Dzmitry Sankouski <dsankouski@gmail.com>");
-MODULE_DESCRIPTION("Samsung S2DOS05 Regulator Driver");
+MODULE_DESCRIPTION("Samsung S2DOS05 display sub-PMIC regulator driver");
 MODULE_LICENSE("GPL");

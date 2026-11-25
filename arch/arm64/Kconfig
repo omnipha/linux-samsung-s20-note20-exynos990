@@ -2448,6 +2448,35 @@ config DMI
 
 endmenu # "Boot options"
 
+config C2S_DIAG
+	bool "c2s rescue diagnostic boot markers (issue #4)"
+	default n
+	help
+	  Build-time switch for the c2s rescue diagnostic candidate. When
+	  enabled, the kernel writes early boot milestone markers as plain
+	  physical stores (MMU off, registers and adrp/adr only) into the
+	  framebuffers so a dying kernel leaves a visible trace on screen.
+	  On top of that, C-level milestone bands are painted from
+	  arch/arm64/kernel/c2s_diag_bands.c: c2s_band_early() from
+	  start_kernel() and setup_arch() (boot ID map, then
+	  early_memremap() or - for the splash buffer the device tree
+	  reserves without no-map - its phys_to_virt() linear alias) and
+	  c2s_band() from later code (long-lived ioremap taken by
+	  c2s_late_init() after mm_core_init()), continuing the asm ladder
+	  downwards so one panel photo shows how far the boot got.  All
+	  three splash buffers (fb0/fb1/fb2) are painted in every phase,
+	  fb2 because the device tree reserves it without no-map and the
+	  linear map covers it.  On top of the uniform bands,
+	  c2s_scanout_probe() paints one band with a different colour per
+	  buffer (red/green/blue), so a single photo names the buffer the
+	  DECON actually scans out - without that, a band that is merely not
+	  scanned out would be indistinguishable from a milestone that was
+	  never reached.
+	  The symbol is enabled only in c2s_rescue_diag_defconfig (the
+	  earlier diagnostic build); the minimal USB baseline
+	  c2s_rescue_defconfig leaves it off, so the rescue Image carries no
+	  framebuffer-specific first-instruction code.
+
 menu "Power management options"
 
 source "kernel/power/Kconfig"
