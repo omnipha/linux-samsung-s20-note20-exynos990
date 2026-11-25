@@ -258,6 +258,14 @@
 	/delete-property/ compatible;
 };
 
+&hsi2c_4 {
+	/delete-property/ compatible;
+};
+
+&hsi2c_15 {
+	/delete-property/ compatible;
+};
+
 &ufs_0 {
 	vcc-supply = <&ufs_vcc_reg>;
 	status = "okay";

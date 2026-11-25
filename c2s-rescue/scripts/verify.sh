@@ -72,7 +72,9 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
          SCSI BLK_DEV_SD SCSI_UFSHCD SCSI_UFSHCD_PLATFORM SCSI_UFS_EXYNOS \
          PHY_SAMSUNG_UFS EFI_PARTITION PARTITION_ADVANCED POWER_RESET \
          REBOOT_MODE SYSCON_REBOOT_MODE \
-         MAILBOX EXYNOS_MBOX EXYNOS_ACPM_PROTOCOL REGULATOR_S2MPS19_ACPM; do
+         MAILBOX EXYNOS_MBOX EXYNOS_ACPM_PROTOCOL REGULATOR_S2MPS19_ACPM \
+         I2C I2C_CHARDEV I2C_EXYNOS5 EXYNOS_USI REGULATOR_S2DOS05 \
+         INPUT_TOUCHSCREEN TOUCHSCREEN_S6SY761; do
 	require_cfg "$s" y
 done
 # Negative control for CONFIG_UNIX gate: prove that an unset CONFIG_UNIX
@@ -121,6 +123,28 @@ if printf '%s\n' "${_neg_s2mps19_out}" | grep -q "FAIL: CONFIG_REGULATOR_S2MPS19
 	ok "CONFIG_REGULATOR_S2MPS19_ACPM negative control: unset symbol is rejected (gate is sensitive)"
 else
 	bad "CONFIG_REGULATOR_S2MPS19_ACPM negative control failed: ${_neg_s2mps19_out}"
+fi
+# Negative control for CONFIG_REGULATOR_S2DOS05 gate:
+_neg_s2dos05_cfg=$(mktemp)
+grep -v "^CONFIG_REGULATOR_S2DOS05=" "${CONFIG}" > "${_neg_s2dos05_cfg}"
+echo "# CONFIG_REGULATOR_S2DOS05 is not set" >> "${_neg_s2dos05_cfg}"
+_neg_s2dos05_out=$(CONFIG="${_neg_s2dos05_cfg}" require_cfg REGULATOR_S2DOS05 y)
+rm -f "${_neg_s2dos05_cfg}"
+if printf '%s\n' "${_neg_s2dos05_out}" | grep -q "FAIL: CONFIG_REGULATOR_S2DOS05"; then
+	ok "CONFIG_REGULATOR_S2DOS05 negative control: unset symbol is rejected (gate is sensitive)"
+else
+	bad "CONFIG_REGULATOR_S2DOS05 negative control failed: ${_neg_s2dos05_out}"
+fi
+# Negative control for CONFIG_TOUCHSCREEN_S6SY761 gate:
+_neg_s6sy761_cfg=$(mktemp)
+grep -v "^CONFIG_TOUCHSCREEN_S6SY761=" "${CONFIG}" > "${_neg_s6sy761_cfg}"
+echo "# CONFIG_TOUCHSCREEN_S6SY761 is not set" >> "${_neg_s6sy761_cfg}"
+_neg_s6sy761_out=$(CONFIG="${_neg_s6sy761_cfg}" require_cfg TOUCHSCREEN_S6SY761 y)
+rm -f "${_neg_s6sy761_cfg}"
+if printf '%s\n' "${_neg_s6sy761_out}" | grep -q "FAIL: CONFIG_TOUCHSCREEN_S6SY761"; then
+	ok "CONFIG_TOUCHSCREEN_S6SY761 negative control: unset symbol is rejected (gate is sensitive)"
+else
+	bad "CONFIG_TOUCHSCREEN_S6SY761 negative control failed: ${_neg_s6sy761_out}"
 fi
 require_cfg CMDLINE_FORCE y
 require_cfg PANIC_TIMEOUT 0
@@ -1970,6 +1994,14 @@ check "acpm compatible is exynos990-acpm-ipc" \
 	grep -q "samsung,exynos990-acpm-ipc" "${DTB_TXT}"
 check "s2mps19 acpm regulators present" \
 	grep -q "samsung,s2mps19-acpm-regulator" "${DTB_TXT}"
+check "usi_dp usi@105900c0 present" \
+	grep -q "usi@105900c0" "${DTB_TXT}"
+check "usi_touch usi@108d00c0 present" \
+	grep -q "usi@108d00c0" "${DTB_TXT}"
+check "s2dos05 pmic present" \
+	grep -q "samsung,s2dos05" "${DTB_TXT}"
+check "touchscreen s6sy761 present" \
+	grep -q "samsung,s6sy761" "${DTB_TXT}"
 # Negative control for ACPM DT gate: prove missing acpm-ipc is detected
 _neg_acpm_dts=$(mktemp)
 grep -v "samsung,exynos990-acpm-ipc" "${DTB_TXT}" > "${_neg_acpm_dts}"
@@ -1979,6 +2011,15 @@ else
 	ok "DT ACPM negative control: missing acpm-ipc node is detected (gate is sensitive)"
 fi
 rm -f "${_neg_acpm_dts}"
+# Negative control for Touch DT gate: prove missing s6sy761 is detected
+_neg_touch_dts=$(mktemp)
+grep -v "samsung,s6sy761" "${DTB_TXT}" > "${_neg_touch_dts}"
+if grep -q "samsung,s6sy761" "${_neg_touch_dts}"; then
+	bad "DT touch negative control failed: pattern unexpectedly matched"
+else
+	ok "DT touch negative control: missing s6sy761 node is detected (gate is sensitive)"
+fi
+rm -f "${_neg_touch_dts}"
 # Last region: 5 x <0x8.. 0x80000000> 2 GiB chunks -> ends at 0xb00000000.
 # (#size-cells=1 caps each entry at 4 GiB, so the 10 GiB region is split.)
 check "memory highmem split 0x880000000..0xb00000000 present" \

@@ -187,6 +187,13 @@
 		clock-output-names = "apm_mbox_pclk";
 	};
 
+	tsp_i2c_clk: tsp-i2c-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <133000000>;
+		clock-output-names = "tsp_i2c_clk";
+	};
+
 	firmware {
 		acpm_ipc: power-management {
 			compatible = "samsung,exynos990-acpm-ipc";
@@ -551,6 +558,90 @@
 			clock-names = "pclk";
 			interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL_HIGH>;
 			#mbox-cells = <0>;
+		};
+
+		usi_dp: usi@105900c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x105900c0 0x20>;
+			ranges;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			clocks = <&tsp_i2c_clk>, <&tsp_i2c_clk>;
+			clock-names = "pclk", "ipclk";
+			samsung,sysreg = <&sysreg_peric0 0x1014>;
+			samsung,mode = <3>; /* USI_V2_I2C */
+			status = "okay";
+
+			hsi2c_dp: i2c@10590000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x10590000 0xc0>;
+				interrupts = <GIC_SPI 403 IRQ_TYPE_LEVEL_HIGH>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+				clocks = <&tsp_i2c_clk>, <&tsp_i2c_clk>;
+				clock-names = "hsi2c", "hsi2c_pclk";
+				pinctrl-names = "default";
+				pinctrl-0 = <&hsi2c4_bus>;
+				status = "okay";
+
+				s2dos05: pmic@60 {
+					compatible = "samsung,s2dos05";
+					reg = <0x60>;
+
+					regulators {
+						s2dos05_ldo2: ldo2 {
+							regulator-name = "tsp_io";
+							regulator-min-microvolt = <1800000>;
+							regulator-max-microvolt = <1800000>;
+							regulator-boot-on;
+						};
+
+						s2dos05_ldo3: ldo3 {
+							regulator-name = "tsp_avdd";
+							regulator-min-microvolt = <3000000>;
+							regulator-max-microvolt = <3000000>;
+							regulator-boot-on;
+						};
+					};
+				};
+			};
+		};
+
+		usi_touch: usi@108d00c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x108d00c0 0x20>;
+			ranges;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			clocks = <&tsp_i2c_clk>, <&tsp_i2c_clk>;
+			clock-names = "pclk", "ipclk";
+			samsung,sysreg = <&sysreg_peric1 0x1024>;
+			samsung,mode = <3>; /* USI_V2_I2C */
+			status = "okay";
+
+			hsi2c_touch: i2c@108d0000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x108d0000 0xc0>;
+				interrupts = <GIC_SPI 420 IRQ_TYPE_LEVEL_HIGH>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+				clocks = <&tsp_i2c_clk>, <&tsp_i2c_clk>;
+				clock-names = "hsi2c", "hsi2c_pclk";
+				pinctrl-names = "default";
+				pinctrl-0 = <&hsi2c15_bus>;
+				status = "okay";
+
+				touchscreen@48 {
+					compatible = "samsung,s6sy761";
+					reg = <0x48>;
+					interrupt-parent = <&gpa1>;
+					interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+					vdd-supply = <&s2dos05_ldo2>;
+					avdd-supply = <&s2dos05_ldo3>;
+					touchscreen-size-x = <1440>;
+					touchscreen-size-y = <3088>;
+				};
+			};
 		};
 	};
 

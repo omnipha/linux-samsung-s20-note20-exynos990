@@ -328,3 +328,5 @@ on baseline (`verify.sh`), plus 10/10 host fault-injection checks for the ACM-in
 fallback, 14/14 checks in test-flash-boot.sh covering negative controls, 34/34 paint path / console checks, negative control platform device collision check, negative control CONFIG_SCSI check, and negative control CONFIG_UNIX check. Nothing here demonstrates a boot, USB enumeration, serial
 console output, SSH login or physical UFS probing on the device - those need
 the coordinator's hardware run.
+
+Stage A (diag17, issues #13, #12): ACPM mailbox + S2MPS19 PMIC regulators and S2DOS05 + s6sy761 touch ported; 337/337 host gates passed.

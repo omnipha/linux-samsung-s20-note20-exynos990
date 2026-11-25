@@ -1810,3 +1810,73 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * `CONFIG_UNIX` negative control: unset CONFIG_UNIX rejected by require_cfg.
 * `clk_ignore_unused` negative control: missing clk_ignore_unused rejected by require_cmdline_opt.
 * `pd_ignore_unused` negative control: missing pd_ignore_unused rejected by require_cmdline_opt.
+
+## diag17 candidate: ACPM mailbox, S2MPS19 PMIC & S2DOS05 / s6sy761 touch bring-up (issues #13, #12)
+
+### Changes
+
+1. **#13 ACPM & S2MPS19 PMIC stack**:
+   - `drivers/mailbox/exynos-mailbox.c`: added `samsung,exynos990-mbox` match data with INTGR0 doorbell shift 16 and INTMR0/1 masking.
+   - `drivers/firmware/samsung/exynos-acpm.c`: added `samsung,exynos990-acpm-ipc` match data (initdata base 0x7000).
+   - `drivers/firmware/samsung/exynos990-pmic-probe.c`: smoke test platform driver reading PMIC chip ID and LDO status via ACPM channel 2.
+   - `drivers/regulator/s2mps19-acpm-regulator.c`: regulator driver for BUCK4M, LDO2, LDO15, and LDO27 via ACPM channel 2.
+   - DT nodes in `exynos990.dtsi`: `apm_mbox_pclk`, `apm_sram@2039000`, `mailbox@15900000`, `acpm_ipc` with `pmic_probe` and `acpm_pmic_regulators`.
+2. **#12 Touchscreen & display sub-PMIC**:
+   - `drivers/regulator/s2dos05-regulator.c`: standalone I2C regulator driver for S2DOS05 touchscreen rails (LDO2 `tsp_io` 1.8V, LDO3 `tsp_avdd` 3.0V).
+   - DT nodes in `exynos990.dtsi`: `tsp_i2c_clk`, USI front-ends `usi_dp` (0x105900c0, mode 3 I2C) and `usi_touch` (0x108d00c0, mode 3 I2C), child HSI2C nodes with S2DOS05 at 0x60 and Samsung Y79A / s6sy761 touch at 0x48.
+   - `exynos990-c2s.dts`: deleted `compatible` property on root inert shells `&hsi2c_4` and `&hsi2c_15` to prevent platform device name collisions.
+3. **Verification gates**:
+   - Config gates and negative controls for `CONFIG_EXYNOS_ACPM_PROTOCOL`, `CONFIG_REGULATOR_S2MPS19_ACPM`, `CONFIG_REGULATOR_S2DOS05`, `CONFIG_TOUCHSCREEN_S6SY761`.
+   - DT gates and negative controls for mailbox, ACPM, S2DOS05, and touch nodes.
+
+### Build commands (build host)
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag17-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag17-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag17-out
+```
+
+Paired baseline (`CONFIG_C2S_DIAG` off) built into `/tmp/opencode/c2s-diag17-base-out`:
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag17-base-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag17-base-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag17-base-out
+```
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag17, signed) | `/tmp/opencode/c2s-diag17-out/boot.img` | 61 865 984 | `5b0fa89a052ed2f217327adfaf7d2ddc2ab9ea5c41faad6cdbfe86dbea4793d8` |
+| Image (diag17) | `/tmp/opencode/c2s-diag17-out/kbuild/arch/arm64/boot/Image` | 13 353 472 | `1b6fec17080e72bf44c2d724aa46525fdf91dc4ac5a011ca47d39a8646a43420` |
+| DTB | `/tmp/opencode/c2s-diag17-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 147 258 | `a733fb3c20a5be28e74f025aef5480950678166309c7c5be2ce1bcdca9838140` |
+| initramfs | `/tmp/opencode/c2s-diag17-out/work/initramfs.cpio.gz` | 3 371 885 | `eedeeca08a100386671c4ef0ef29efbf3737d5a5bb0bdaaff0ba8af60155ed6e` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag17-base-out/boot.img` | 61 865 984 | `15a68001914c603bcba87347368a45c79c67528e702e880422ff6271cf98cb41` |
+| Image (baseline) | `/tmp/opencode/c2s-diag17-base-out/kbuild/arch/arm64/boot/Image` | 13 156 864 | `7c4525a851e36ff5d9d49a5c8a17b9e936c8b11f4a043ae780223fdd5dc89794` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 147 258 B == kbuild DTB.
+
+### Host evidence
+
+* `verify.sh`: **337 passed, 0 failed** on diag17; **337 passed, 0 failed** on baseline.
+* `CONFIG_EXYNOS_ACPM_PROTOCOL` negative control: unset symbol rejected.
+* `CONFIG_REGULATOR_S2MPS19_ACPM` negative control: unset symbol rejected.
+* `CONFIG_REGULATOR_S2DOS05` negative control: unset symbol rejected.
+* `CONFIG_TOUCHSCREEN_S6SY761` negative control: unset symbol rejected.
+* DT ACPM negative control: missing acpm-ipc node rejected.
+* DT touch negative control: missing s6sy761 node rejected.
+* `check-platform-device-collisions.py`: **0 name collisions across all 9 merged DTBs**.
