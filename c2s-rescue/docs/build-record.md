@@ -2241,5 +2241,39 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * Gate: `/run/go-rootfs` trigger present in `/init`.
 * Negative controls verified for all new gates.
 
+### Device Test Result (diag22b)
+FAILED (measured 21:21, rescue mode, SSH, dd read 6 GiB of sda32): `saved_err 0x20000` (`SYSTEM_BUS_FATAL_ERROR`) again at ~131 s uptime, OCS invalid tag 11/12. IO coherency (`dma-coherent` + `iocc 0x00c00000`) alone does not resolve the bus fatal error. Device log: `~/phone-second-life-data/mb008/diagnostics/diag22b-ufs-dmesg.txt`.
+Key discovery from dmesg comparison: z3s negotiated `FAST series_B G_3 L_2` (HS Gear 3, stable at 736 MB/s), whereas diag22b negotiated `FAST series_B G_4 L_2` (HS Gear 4). Mainline 7.1-rc4 `exynos_ufs_get_hs_gear()` returns Gear 4 when controller major version >= 3. However, Exynos 990 PHY calibration tables are only validated for HS-G3; running at Gear 4 causes high-frequency signal integrity / UIC errors and triggers 0x20000 on heavy sustained traffic.
+
+---
+
+## Candidate diag22c (Issue #20): Cap UFS to HS Gear 3 (FAST series_B G_3 L_2)
+
+### Objective
+Cap UFS link power mode negotiation to HS Gear 3 (`FAST series_B G_3 L_2`), exactly aligning with the working z3s reference (`SESSION4_FINDINGS.md:17,147,169`, 736 MB/s stable read).
+1. In `drivers/ufs/host/ufs-exynos.c`, update `exynos_ufs_get_hs_gear()` to return `UFS_HS_G3` when `of_device_is_compatible(hba->dev->of_node, "samsung,exynos990-ufs")` is matched, and also honor `limit-hs-gear` DT property if present.
+2. In `arch/arm64/boot/dts/exynos/exynos990.dtsi`, set `limit-hs-gear = <3>;` on `ufs_0: ufs@13100000`.
+3. Retain stock-matching IO coherency (`dma-coherent`, `iocc_mask = 0x00c00000`) and rescue boot menu default with live `/run/go-rootfs` trigger from diag22b.
+
+### Artifacts (build host, `/tmp/opencode/c2s-diag22c-out`)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `boot.img` (diag22c, signed) | 61,865,984 B | `d1d8afc46209423bca51db0758ceaf924d1d0c4498f84949118e673fcbc4d933` |
+| `Image` (diag22c) | 14,961,152 B | `0bdfe166bd4c2b02e510280a92fe946f8d95ab76ecc1d3b445d8c2a9be58ddb8` |
+| `DTB` | 149,168 B | `403c0a6e68b1dd19c1ff2a4a203d644171da3e7a48c7b9104aa4e932d8e35a1a` |
+| `initramfs` | 3,375,015 B | `70ee2acf56b046bcda89e697f26c0fbdbfaa8f55ba67d13f18efe456056fd1ab` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 149,168 B == kbuild DTB.
+
+### Verification
+* `verify.sh`: **430 passed, 0 failed**.
+* Gate: `limit-hs-gear` property present in `ufs_0` node and equals 3.
+* Gate: `exynos_ufs_get_hs_gear` caps exynos990 to `UFS_HS_G3`.
+* Gate: `dma-coherent` property present in `ufs_0` node.
+* Gate: `UFS_EXYNOS990_SHARABLE` defined as `0x00c00000`.
+* Gate: `exynos990_ufs_drvs` has `iocc_mask = UFS_EXYNOS990_SHARABLE`.
+* Negative controls verified for all gates.
+
 
 

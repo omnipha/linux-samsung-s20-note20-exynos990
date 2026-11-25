@@ -807,7 +807,20 @@ static void exynos_ufs_config_sync_pattern_mask(struct exynos_ufs *ufs,
 
 static u32 exynos_ufs_get_hs_gear(struct ufs_hba *hba)
 {
+	u32 limit_gear;
 	u8 major;
+
+	if (hba->dev->of_node &&
+	    !of_property_read_u32(hba->dev->of_node, "limit-hs-gear", &limit_gear))
+		return limit_gear;
+
+	/*
+	 * Exynos990 PHY calibration tables are verified for HS-G3 (matching z3s
+	 * mainline reference, FAST series_B G_3 L_2 at 736 MB/s). G4 triggers
+	 * UIC / bus fatal errors under heavy load. Cap exynos990 to HS-G3.
+	 */
+	if (of_device_is_compatible(hba->dev->of_node, "samsung,exynos990-ufs"))
+		return UFS_HS_G3;
 
 	major = FIELD_GET(UFS_HW_VER_MAJOR_MASK, hba->ufs_version);
 

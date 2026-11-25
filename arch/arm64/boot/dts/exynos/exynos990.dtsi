@@ -487,6 +487,7 @@
 			phy-names = "ufs-phy";
 			samsung,sysreg = <&sysreg_hsi1 0x700>;
 			dma-coherent;
+			limit-hs-gear = <3>;
 			status = "disabled";
 		};
 

@@ -2548,10 +2548,14 @@ else
 fi
 rm -f "${_neg_ev_md}"
 
-# ------------------------------------------------------------ UFS driver verification (diag22b, issue #20)
-section "ufs driver verification (diag22b, issue #20)"
+# ------------------------------------------------------------ UFS driver verification (diag22c, issue #20)
+section "ufs driver verification (diag22c, issue #20)"
 check "dma-coherent property present in ufs node" \
 	sh -c 'fdtget "$1" /soc@0/ufs@13100000 dma-coherent' _ "${DTB}"
+check "limit-hs-gear property present in ufs node" \
+	sh -c 'test "$(fdtget "$1" /soc@0/ufs@13100000 limit-hs-gear 2>/dev/null)" = "3"' _ "${DTB}"
+check "exynos_ufs_get_hs_gear caps exynos990 to UFS_HS_G3" \
+	sh -c 'grep -A 15 "exynos_ufs_get_hs_gear" "$1" | grep -q "of_device_is_compatible.*samsung,exynos990-ufs"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "UFS_EXYNOS990_SHARABLE defined as 0x00c00000 in ufs-exynos.c" \
 	grep -q "#define UFS_EXYNOS990_SHARABLE[[:space:]]*0x00c00000" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "exynos990_ufs_drvs has iocc_mask = UFS_EXYNOS990_SHARABLE" \
@@ -2564,6 +2568,23 @@ check "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR absent from exynos990_ufs_drvs" \
 	sh -c '! (grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "exynos990_ufs_drvs post_link and pre_pwr_change absent" \
 	sh -c '! (grep -A 20 "exynos990_ufs_drvs" "$1" | grep -E -q "\.(post_link|pre_pwr_change)")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+
+# Negative control for limit-hs-gear in DTB
+if fdtget "${DTB}" /soc@0/ufs@13100000 non_existent_dummy_gear >/dev/null 2>&1; then
+	bad "limit-hs-gear negative control failed: non_existent property unexpectedly matched"
+else
+	ok "limit-hs-gear negative control: missing property is detected (gate is sensitive)"
+fi
+
+# Negative control for exynos_ufs_get_hs_gear capping
+_neg_gear_c=$(mktemp)
+grep -A 15 "exynos_ufs_get_hs_gear" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "samsung,exynos990-ufs" > "${_neg_gear_c}"
+if grep -q "samsung,exynos990-ufs" "${_neg_gear_c}"; then
+	bad "exynos_ufs_get_hs_gear negative control failed: pattern unexpectedly matched"
+else
+	ok "exynos_ufs_get_hs_gear negative control: missing capping check is detected (gate is sensitive)"
+fi
+rm -f "${_neg_gear_c}"
 
 # Negative control for dma-coherent in DTB
 if fdtget "${DTB}" /soc@0/ufs@13100000 non_existent_dummy_prop >/dev/null 2>&1; then
