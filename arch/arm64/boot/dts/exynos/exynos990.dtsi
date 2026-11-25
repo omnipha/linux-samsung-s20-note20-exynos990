@@ -194,6 +194,13 @@
 		clock-output-names = "tsp_i2c_clk";
 	};
 
+	gpu_clk: gpu-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <800000000>;
+		clock-output-names = "gpu_clk";
+	};
+
 	firmware {
 		acpm_ipc: power-management {
 			compatible = "samsung,exynos990-acpm-ipc";
@@ -642,6 +649,26 @@
 					touchscreen-size-y = <3088>;
 				};
 			};
+		};
+
+		pd_g3d: power-domain@15862200 {
+			compatible = "samsung,exynos990-pd";
+			reg = <0x15862200 0x20>;
+			#power-domain-cells = <0>;
+			label = "G3D";
+		};
+
+		gpu: gpu@18500000 {
+			compatible = "arm,mali-valhall-jm";
+			reg = <0x18500000 0x5000>;
+			interrupts = <GIC_SPI 301 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 302 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 300 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "job", "mmu", "gpu";
+			clocks = <&gpu_clk>;
+			clock-names = "core";
+			power-domains = <&pd_g3d>;
+			status = "okay";
 		};
 	};
 

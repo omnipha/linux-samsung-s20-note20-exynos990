@@ -330,3 +330,4 @@ console output, SSH login or physical UFS probing on the device - those need
 the coordinator's hardware run.
 
 Stage A (diag17, issues #13, #12): ACPM mailbox + S2MPS19 PMIC regulators and S2DOS05 + s6sy761 touch ported; 337/337 host gates passed.
+Stage B (diag18, issues #9, #10): DRM/KMS simpledrm (card0) and Panfrost Mali-G77 GPU ported; 351/351 host gates passed.

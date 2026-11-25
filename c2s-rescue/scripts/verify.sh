@@ -75,7 +75,7 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
          MAILBOX EXYNOS_MBOX EXYNOS_ACPM_PROTOCOL REGULATOR_S2MPS19_ACPM \
          I2C I2C_CHARDEV I2C_EXYNOS5 EXYNOS_USI REGULATOR_S2DOS05 \
          INPUT_TOUCHSCREEN TOUCHSCREEN_S6SY761 \
-         DRM DRM_SIMPLEDRM DRM_FBDEV_EMULATION; do
+         DRM DRM_SIMPLEDRM DRM_FBDEV_EMULATION DRM_PANFROST; do
 	require_cfg "$s" y
 done
 # Negative control for CONFIG_UNIX gate: prove that an unset CONFIG_UNIX
@@ -162,6 +162,17 @@ if printf '%s\n' "${_neg_simpledrm_out}" | grep -q "FAIL: CONFIG_DRM_SIMPLEDRM";
 	ok "CONFIG_DRM_SIMPLEDRM negative control: unset symbol is rejected (gate is sensitive)"
 else
 	bad "CONFIG_DRM_SIMPLEDRM negative control failed: ${_neg_simpledrm_out}"
+fi
+# Negative control for CONFIG_DRM_PANFROST gate:
+_neg_panfrost_cfg=$(mktemp)
+grep -v "^CONFIG_DRM_PANFROST=" "${CONFIG}" > "${_neg_panfrost_cfg}"
+echo "# CONFIG_DRM_PANFROST is not set" >> "${_neg_panfrost_cfg}"
+_neg_panfrost_out=$(CONFIG="${_neg_panfrost_cfg}" require_cfg DRM_PANFROST y)
+rm -f "${_neg_panfrost_cfg}"
+if printf '%s\n' "${_neg_panfrost_out}" | grep -q "FAIL: CONFIG_DRM_PANFROST"; then
+	ok "CONFIG_DRM_PANFROST negative control: unset symbol is rejected (gate is sensitive)"
+else
+	bad "CONFIG_DRM_PANFROST negative control failed: ${_neg_panfrost_out}"
 fi
 require_cfg CMDLINE_FORCE y
 require_cfg PANIC_TIMEOUT 0
@@ -2021,6 +2032,32 @@ check "touchscreen s6sy761 present" \
 	grep -q "samsung,s6sy761" "${DTB_TXT}"
 check "framebuffer0 has memory-region" \
 	grep -q "memory-region" "${DTB_TXT}"
+check "pd_g3d power domain present" \
+	grep -q "power-domain@15862200" "${DTB_TXT}"
+check "pd_g3d compatible is exynos990-pd" \
+	grep -q "samsung,exynos990-pd" "${DTB_TXT}"
+check "gpu@18500000 present" \
+	grep -q "gpu@18500000" "${DTB_TXT}"
+check "gpu compatible is mali-valhall-jm" \
+	grep -q "arm,mali-valhall-jm" "${DTB_TXT}"
+# Negative control for pd_g3d DT gate: prove missing power domain is detected
+_neg_pd_dts=$(mktemp)
+grep -v "samsung,exynos990-pd" "${DTB_TXT}" > "${_neg_pd_dts}"
+if grep -q "samsung,exynos990-pd" "${_neg_pd_dts}"; then
+	bad "DT pd_g3d negative control failed: pattern unexpectedly matched"
+else
+	ok "DT pd_g3d negative control: missing power domain node is detected (gate is sensitive)"
+fi
+rm -f "${_neg_pd_dts}"
+# Negative control for GPU DT gate: prove missing gpu is detected
+_neg_gpu_dts=$(mktemp)
+grep -v "arm,mali-valhall-jm" "${DTB_TXT}" > "${_neg_gpu_dts}"
+if grep -q "arm,mali-valhall-jm" "${_neg_gpu_dts}"; then
+	bad "DT GPU negative control failed: pattern unexpectedly matched"
+else
+	ok "DT GPU negative control: missing gpu node is detected (gate is sensitive)"
+fi
+rm -f "${_neg_gpu_dts}"
 # Negative control for framebuffer memory-region gate: prove missing memory-region is detected
 _neg_fb_dts=$(mktemp)
 grep -v "memory-region" "${DTB_TXT}" > "${_neg_fb_dts}"

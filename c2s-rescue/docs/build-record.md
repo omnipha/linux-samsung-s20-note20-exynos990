@@ -1880,3 +1880,73 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * DT ACPM negative control: missing acpm-ipc node rejected.
 * DT touch negative control: missing s6sy761 node rejected.
 * `check-platform-device-collisions.py`: **0 name collisions across all 9 merged DTBs**.
+
+## diag18 candidate: DRM/KMS simpledrm display & Panfrost Mali-G77 GPU bring-up (issues #9, #10)
+
+### Changes
+
+1. **#9 Display for Wayland (DRM/KMS simpledrm)**:
+   - `drivers/gpu/drm/sysfb/simpledrm.c`: added 64-bit DMA mask `dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64))` in `simpledrm_probe()` to support high-memory framebuffer mapping.
+   - `arch/arm64/boot/dts/exynos/exynos990-c2s.dts`: in `chosen`, added `#address-cells = <2>; #size-cells = <1>; ranges;` and attached `memory-region = <&cont_splash_mem>;` to `framebuffer0` (resolves simple-framebuffer error -22 "No memory resource").
+   - `c2s_rescue_defconfig` & `c2s_rescue_diag_defconfig`: enabled `CONFIG_DRM=y`, `CONFIG_DRM_SIMPLEDRM=y`, `CONFIG_DRM_FBDEV_EMULATION=y`, and disabled `CONFIG_FB_SIMPLE`.
+2. **#10 GPU Mali-G77 (Panfrost & Exynos 990 G3D power domain)**:
+   - `drivers/gpu/drm/panfrost/panfrost_features.h` & `panfrost_issues.h`: defined G77 feature and issue flags matching G57 with revision aliases for `r0p0` and `r0p1`.
+   - `drivers/gpu/drm/panfrost/panfrost_gpu.c`: added `GPU_MODEL(g77, 0x9000, GPU_REV(g77, 0, 0), GPU_REV(g77, 0, 1))`.
+   - `drivers/pmdomain/samsung/exynos-pm-domains.c`: added `exynos990_cfg` (`local_pwr_cfg = 0x1`) and compatible `"samsung,exynos990-pd"` matching downstream PMU hardware.
+   - `arch/arm64/boot/dts/exynos/exynos990.dtsi`: added fixed-clock `gpu_clk` (800MHz), power domain `pd_g3d: power-domain@15862200`, and GPU node `gpu: gpu@18500000` (`arm,mali-valhall-jm`, IRQs 301, 302, 300).
+   - `c2s_rescue_defconfig` & `c2s_rescue_diag_defconfig`: enabled `CONFIG_DRM_PANFROST=y`.
+3. **Verification gates**:
+   - Config gates and negative controls for `CONFIG_DRM`, `CONFIG_DRM_SIMPLEDRM`, `CONFIG_DRM_FBDEV_EMULATION`, and `CONFIG_DRM_PANFROST`.
+   - DT gates and negative controls for `simple-framebuffer` (`memory-region`), `power-domain@15862200`, and `gpu@18500000`.
+
+### Build commands (build host)
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_diag_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag18-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag18-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag18-out
+```
+
+Paired baseline (`CONFIG_C2S_DIAG` off) built into `/tmp/opencode/c2s-diag18-base-out`:
+
+```sh
+C2S_DEFCONFIG=c2s_rescue_defconfig \
+C2S_OUTDIR=/tmp/opencode/c2s-diag18-base-out \
+C2S_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub" \
+c2s-rescue/scripts/build.sh
+
+C2S_AVB_KEY=/tmp/opencode/avb-key/avb_key.pem \
+c2s-rescue/scripts/package-bootimg.sh --outdir /tmp/opencode/c2s-diag18-base-out
+
+c2s-rescue/scripts/verify.sh /tmp/opencode/c2s-diag18-base-out
+```
+
+### Artifacts (build host)
+
+| artifact | path | size (B) | sha256 |
+|---|---|---|---|
+| boot.img (diag18, signed) | `/tmp/opencode/c2s-diag18-out/boot.img` | 61 865 984 | `8276b052977aa439de2173e7fbdd8b7ca768e1d7528fe6be7b4e5000904840a0` |
+| Image (diag18) | `/tmp/opencode/c2s-diag18-out/kbuild/arch/arm64/boot/Image` | 14 019 072 | `a04fb29b1412e6b5bf749cd64564c0b1c4719efb236daae26d0ac2d011ba8e98` |
+| DTB | `/tmp/opencode/c2s-diag18-out/kbuild/arch/arm64/boot/dts/exynos/exynos990-c2s.dtb` | 147 957 | `77a936acf1987a29d990cf7068402b69fa4433d17eedcca1db9f8930e8b827a3` |
+| initramfs | `/tmp/opencode/c2s-diag18-out/work/initramfs.cpio.gz` | 3 371 885 | `eedeeca08a100386671c4ef0ef29efbf3737d5a5bb0bdaaff0ba8af60155ed6e` |
+| boot.img (baseline, signed) | `/tmp/opencode/c2s-diag18-base-out/boot.img` | 61 865 984 | `d7ce5a1219c7a79942594f9a820b6dca14a0c690818e2d2676fd222154634e24` |
+| Image (baseline) | `/tmp/opencode/c2s-diag18-base-out/kbuild/arch/arm64/boot/Image` | 13 888 000 | `067f761bb74a4f04a97805a225bfa3e279545857f0da5a13494de3d1eb020027` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 147 957 B == kbuild DTB.
+
+### Host evidence
+
+* `verify.sh`: **351 passed, 0 failed** on diag18; **351 passed, 0 failed** on baseline.
+* `CONFIG_DRM` negative control: unset symbol rejected.
+* `CONFIG_DRM_SIMPLEDRM` negative control: unset symbol rejected.
+* `CONFIG_DRM_PANFROST` negative control: unset symbol rejected.
+* DT simple-framebuffer memory-region negative control: missing memory-region rejected.
+* DT GPU node negative control: missing gpu@18500000 node rejected.
+* DT G3D power-domain negative control: missing power-domain@15862200 node rejected.
+* `check-platform-device-collisions.py`: **0 name collisions across all 9 merged DTBs**.
