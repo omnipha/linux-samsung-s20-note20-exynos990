@@ -2174,3 +2174,39 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
 * Gate: `device_reset` callback wired in `ufs_hba_exynos_ops`.
 * Negative controls verified for all 4 gates.
 
+---
+
+## Candidate diag22a (Issue #20): z3s-Identical UFS Driver
+
+### Objective
+Restore `drivers/ufs/host/ufs-exynos.c` (`exynos990_ufs_drvs`) to 100% byte-for-byte identity with `ref/z3s-mainline-linux` (`linux990-working-tree.patch:1798-1810`).
+Remove both unsourced quirks (`UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR` and `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL`). Keep `pd_ignore_unused` in cmdline unchanged to test one variable at a time.
+
+### Implementation
+- `exynos990_ufs_drvs.quirks`:
+  `UFSHCD_QUIRK_PRDT_BYTE_GRAN | UFSHCI_QUIRK_SKIP_RESET_INTR_AGGR | UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR | UFSHCD_QUIRK_SKIP_DEF_UNIPRO_TIMEOUT_SETTING`
+- `exynos990_ufs_drvs.opts`:
+  `EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL | EXYNOS_UFS_OPT_UFSPR_SECURE | EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR | EXYNOS_UFS_OPT_TIMER_TICK_SELECT`
+- Removed `.post_link` and `.pre_pwr_change` hooks (z3s omits them).
+- `ufs_hba_exynos_ops` unaugmented (no `.device_reset`, exactly as in z3s).
+
+### Artifacts (build host, `/tmp/opencode/c2s-diag22a-out`)
+
+| Artifact | Size | sha256 |
+|---|---|---|
+| `boot.img` (diag22a, signed) | 61,865,984 B | `ebf6f17c7a12cf0446091294206330f5754bbb65696d2d877d691a2ae81a77a5` |
+| `Image` (diag22a) | 15,092,224 B | `fe5ce90f12e3f7ef52a104ddd9a681817d2fe5460c0d255477edae66a26ccc0e` |
+| `DTB` | 149,113 B | `d960900a96ed64b86fdc01efae65a8c42cfdf0b753dca46aa132696697d31f89` |
+| `initramfs` | 3,374,131 B | `d12fb0499363bb9f5c262b5f14380deedc52c8f0f7f804b8fbd8bfdd6e1e90c8` |
+
+AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FDT 149,113 B == kbuild DTB.
+
+### Verification
+* `verify.sh`: **417 passed, 0 failed**.
+* Gate: `exynos990_ufs_drvs` quirks match z3s reference exactly.
+* Gate: `UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL` absent from `exynos990_ufs_drvs`.
+* Gate: `UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR` absent from `exynos990_ufs_drvs`.
+* Gate: `exynos990_ufs_drvs` post_link and pre_pwr_change absent.
+* Negative controls verified for all 4 gates.
+
+

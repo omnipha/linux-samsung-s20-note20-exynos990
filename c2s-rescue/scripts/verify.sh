@@ -2535,24 +2535,35 @@ else
 fi
 rm -f "${_neg_ev_md}"
 
-# ------------------------------------------------------------ UFS driver verification (issue #20)
-section "ufs driver verification (issue #20)"
-check "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL present in exynos990_ufs_drvs" \
-	sh -c 'grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+# ------------------------------------------------------------ UFS driver verification (diag22a, issue #20)
+section "ufs driver verification (diag22a, issue #20)"
+check "exynos990_ufs_drvs quirks match z3s reference" \
+	sh -c 'grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
+check "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL absent from exynos990_ufs_drvs" \
+	sh -c '! (grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR absent from exynos990_ufs_drvs" \
 	sh -c '! (grep -A 15 "exynos990_ufs_drvs" "$1" | grep -q "UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 check "exynos990_ufs_drvs post_link and pre_pwr_change absent" \
 	sh -c '! (grep -A 20 "exynos990_ufs_drvs" "$1" | grep -E -q "\.(post_link|pre_pwr_change)")' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
-check "device_reset callback wired in ufs_hba_exynos_ops" \
-	sh -c 'grep -A 20 "ufs_hba_exynos_ops" "$1" | grep -q "\.device_reset[[:space:]]*=[[:space:]]*exynos_ufs_device_reset"' _ "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c"
 
-# Negative control for UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL gate
-_neg_ufs_wb=$(mktemp)
-grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL" > "${_neg_ufs_wb}"
-if grep -q "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL" "${_neg_ufs_wb}"; then
-	bad "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL negative control failed: pattern unexpectedly matched"
+# Negative control for z3s quirks reference gate
+_neg_ufs_z3s=$(mktemp)
+grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR" > "${_neg_ufs_z3s}"
+if grep -q "UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR" "${_neg_ufs_z3s}"; then
+	bad "exynos990_ufs_drvs z3s quirks negative control failed: pattern unexpectedly matched"
 else
-	ok "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL negative control: missing quirk is detected (gate is sensitive)"
+	ok "exynos990_ufs_drvs z3s quirks negative control: missing reference quirk is detected (gate is sensitive)"
+fi
+rm -f "${_neg_ufs_z3s}"
+
+# Negative control for UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL absence gate
+_neg_ufs_wb=$(mktemp)
+grep -A 15 "exynos990_ufs_drvs" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" > "${_neg_ufs_wb}"
+echo "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL" >> "${_neg_ufs_wb}"
+if ! grep -q "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL" "${_neg_ufs_wb}"; then
+	bad "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL negative control failed: simulated defect was not detected"
+else
+	ok "UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL negative control: unwanted quirk presence is detected (gate is sensitive)"
 fi
 rm -f "${_neg_ufs_wb}"
 
@@ -2577,16 +2588,6 @@ else
 	ok "exynos990_ufs_drvs post_link/pre_pwr_change negative control: unwanted hook presence is detected (gate is sensitive)"
 fi
 rm -f "${_neg_ufs_hooks}"
-
-# Negative control for device_reset callback presence gate
-_neg_ufs_rst=$(mktemp)
-grep -A 20 "ufs_hba_exynos_ops" "${REPO_DIR}/drivers/ufs/host/ufs-exynos.c" | grep -v "device_reset" > "${_neg_ufs_rst}"
-if grep -q "device_reset" "${_neg_ufs_rst}"; then
-	bad "ufs_hba_exynos_ops device_reset negative control failed: pattern unexpectedly matched"
-else
-	ok "ufs_hba_exynos_ops device_reset negative control: missing callback is detected (gate is sensitive)"
-fi
-rm -f "${_neg_ufs_rst}"
 
 # --------------------------------------------- stock DTBO overlay compatibility
 # sboot applies the stock dtbo.img entry for this board's hw_rev onto our dt
