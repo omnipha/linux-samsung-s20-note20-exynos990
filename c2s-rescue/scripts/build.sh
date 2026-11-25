@@ -233,11 +233,13 @@ hostname ip ifconfig route grep sed awk vi less more head tail cut tr sort \
 kill killall pidof ps top setsid cttyhack telnet telnetd udhcpc udhcpd nc \
 netstat sysctl login passwd printf test chmod chown stat dd tar gzip gunzip \
 uname env date echo expr find xargs tee touch which timeout od \
-id whoami groups sha256sum readlink basename sync blockdev df wc reboot devmem"
+id whoami groups sha256sum readlink basename sync blockdev df wc reboot devmem \
+switch_root findfs"
 for a in ${APPLETS}; do
 	ln -sf /bin/busybox "${ROOT}/bin/${a}"
 done
 ln -sf /bin/busybox "${ROOT}/sbin/init"
+ln -sf /bin/busybox "${ROOT}/sbin/switch_root"
 
 # dropbear
 cp "${DROPBEAR_BIN}" "${ROOT}/usr/sbin/dropbear"
@@ -401,6 +403,7 @@ LIST="${WORK}/cpio.list"
 		echo "slink /bin/${a} /bin/busybox 0755 0 0"
 	done
 	echo "slink /sbin/init /init 0755 0 0"
+	echo "slink /sbin/switch_root /bin/busybox 0755 0 0"
 	# The kernel opens /dev/console before it executes /init
 	# (console_on_rootfs(), init/main.c), so the node must exist in the cpio.
 	echo "nod /dev/console 0600 0 0 c 5 1"

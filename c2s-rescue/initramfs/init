@@ -230,17 +230,85 @@ scan_storage() {
 }
 scan_storage
 
+# ------------------------------------------------------------- switch_root
+try_switch_root() {
+    local target="/dev/block/by-name/userdata"
+    local newroot="/newroot"
+    local timeout=20
+    local elapsed=0
+    local found=0
+
+    log "switch_root: waiting up to ${timeout}s for ${target} with ext4 label c2s-root and /sbin/init..."
+    mkdir -p "${newroot}"
+
+    while [ "${elapsed}" -lt "${timeout}" ]; do
+        if [ ! -e "${target}" ]; then
+            if [ -x /usr/sbin/c2s-blockmap ]; then
+                /usr/sbin/c2s-blockmap >/dev/null 2>&1 || true
+            fi
+        fi
+
+        if [ -e "${target}" ]; then
+            local label=""
+            label=$(dd if="${target}" bs=1 skip=1144 count=16 2>/dev/null | tr -d '\0')
+            if [ "${label}" = "c2s-root" ]; then
+                log "switch_root: found ${target} with label '${label}' at ${elapsed}s"
+                if mount -t ext4 -o ro "${target}" "${newroot}" 2>/dev/null || mount -t ext4 "${target}" "${newroot}" 2>/dev/null; then
+                    if [ -x "${newroot}/lib/systemd/systemd" ] || \
+                       [ -x "${newroot}/usr/lib/systemd/systemd" ] || \
+                       [ -L "${newroot}/sbin/init" ] || \
+                       [ -f "${newroot}/sbin/init" ] || \
+                       [ -x "${newroot}/bin/sh" ]; then
+                        log "switch_root: valid init found on ${target}; preparing switch_root"
+                        mount -o remount,rw "${newroot}" 2>/dev/null || true
+                        found=1
+                        break
+                    else
+                        log "switch_root: ${target} mounted but no valid init found"
+                        umount "${newroot}" 2>/dev/null || true
+                    fi
+                fi
+            fi
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if [ "${found}" -eq 1 ]; then
+        log "switch_root: stopping initramfs dropbear to free port 22 for rootfs sshd..."
+        if [ -n "${DROPBEAR_PID}" ] && kill -0 "${DROPBEAR_PID}" 2>/dev/null; then
+            kill -TERM "${DROPBEAR_PID}" 2>/dev/null || true
+            sleep 0.2
+            kill -KILL "${DROPBEAR_PID}" 2>/dev/null || true
+            DROPBEAR_PID=""
+        fi
+
+        log "switch_root: moving mountpoints to ${newroot}..."
+        mkdir -p "${newroot}/dev" "${newroot}/proc" "${newroot}/sys" "${newroot}/run"
+        mount -o move /dev "${newroot}/dev" 2>/dev/null || true
+        mount -o move /proc "${newroot}/proc" 2>/dev/null || true
+        mount -o move /sys "${newroot}/sys" 2>/dev/null || true
+
+        log "switch_root: executing switch_root to /sbin/init on ${target}"
+        exec switch_root "${newroot}" /sbin/init
+        log "switch_root: exec switch_root failed! Falling back to rescue"
+        start_dropbear
+    else
+        log "switch_root: rootfs on ${target} not mounted within ${timeout}s; falling back to rescue mode"
+    fi
+}
+
 # ------------------------------------------------------------- boot menu
-# Selection between "rescue (SSH only, default)" and "rescue + USB
-# telnet". The stock c2s bootloader (sboot) offers no menu of its own,
-# so the menu lives in this initramfs, which sboot loads from the boot
-# image.
+# Selection between "rootfs (Debian, default)", "rescue (SSH only)", and
+# "rescue + USB telnet". The stock c2s bootloader (sboot) offers no menu
+# of its own, so the menu lives in this initramfs, which sboot loads from the
+# boot image.
 #
 # Telnet never starts by default. It starts only when the operator
-# explicitly selected it in the menu (USB ACM serial "t" or volume
-# down), or when it was armed earlier with "rescue-telnet arm" (the
-# marker file). The marker wins over the menu, so an armed telnet
-# stays armed across reboots until it is disarmed.
+# explicitly selected it in the menu (USB ACM serial "telnet"), or when it
+# was armed earlier with "rescue-telnet arm" (the marker file). The marker
+# wins over the menu, so an armed telnet stays armed across reboots until
+# it is disarmed.
 boot_menu() {
     if [ -f /etc/enable-telnet ]; then
         log "boot menu: telnet already armed (rescue-telnet arm); keeping it armed"
@@ -253,8 +321,12 @@ boot_menu() {
             RESCUE_ENABLE_TELNET=1
             log "boot menu: telnet mode selected (USB-only, until rescue-telnet disarm)"
             ;;
+        rescue)
+            log "boot menu: rescue mode selected (staying in initramfs)"
+            ;;
         *)
-            log "boot menu: rescue mode selected (telnet off)"
+            log "boot menu: rootfs mode selected (default); attempting switch_root"
+            try_switch_root
             ;;
     esac
 }

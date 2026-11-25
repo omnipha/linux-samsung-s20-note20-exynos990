@@ -75,9 +75,37 @@ for s in ARCH_EXYNOS USB_GADGET USB_CONFIGFS USB_CONFIGFS_NCM USB_CONFIGFS_RNDIS
          MAILBOX EXYNOS_MBOX EXYNOS_ACPM_PROTOCOL REGULATOR_S2MPS19_ACPM \
          I2C I2C_CHARDEV I2C_EXYNOS5 EXYNOS_USI REGULATOR_S2DOS05 \
          INPUT_TOUCHSCREEN TOUCHSCREEN_S6SY761 \
-         DRM DRM_SIMPLEDRM DRM_FBDEV_EMULATION DRM_PANFROST; do
+         DRM DRM_SIMPLEDRM DRM_FBDEV_EMULATION DRM_PANFROST \
+         EXT4_FS EXT4_FS_POSIX_ACL CGROUPS CGROUP_PIDS CGROUP_DEVICE \
+         CGROUP_CPUACCT CGROUP_SCHED AUTOFS_FS SECCOMP; do
 	require_cfg "$s" y
 done
+# Negative control for CONFIG_EXT4_FS gate: prove that an unset CONFIG_EXT4_FS
+# (which prevents rootfs mount) is detected and rejected by require_cfg.
+_neg_cfg=$(mktemp)
+grep -v "^CONFIG_EXT4_FS=" "${CONFIG}" > "${_neg_cfg}"
+echo "# CONFIG_EXT4_FS is not set" >> "${_neg_cfg}"
+_neg_out=$(CONFIG="${_neg_cfg}" require_cfg EXT4_FS y)
+rm -f "${_neg_cfg}"
+if printf '%s\n' "${_neg_out}" | grep -q "FAIL: CONFIG_EXT4_FS"; then
+	ok "CONFIG_EXT4_FS negative control: unset CONFIG_EXT4_FS is rejected (gate is sensitive)"
+else
+	bad "CONFIG_EXT4_FS negative control failed: unset CONFIG_EXT4_FS was not rejected: ${_neg_out}"
+fi
+
+# Negative control for CONFIG_CGROUPS gate: prove that an unset CONFIG_CGROUPS
+# (which prevents systemd from booting) is detected and rejected by require_cfg.
+_neg_cfg=$(mktemp)
+grep -v "^CONFIG_CGROUPS=" "${CONFIG}" > "${_neg_cfg}"
+echo "# CONFIG_CGROUPS is not set" >> "${_neg_cfg}"
+_neg_out=$(CONFIG="${_neg_cfg}" require_cfg CGROUPS y)
+rm -f "${_neg_cfg}"
+if printf '%s\n' "${_neg_out}" | grep -q "FAIL: CONFIG_CGROUPS"; then
+	ok "CONFIG_CGROUPS negative control: unset CONFIG_CGROUPS is rejected (gate is sensitive)"
+else
+	bad "CONFIG_CGROUPS negative control failed: unset CONFIG_CGROUPS was not rejected: ${_neg_out}"
+fi
+
 # Negative control for CONFIG_UNIX gate: prove that an unset CONFIG_UNIX
 # (the pre-fix diag13 defect where sudo-rs failed with EAFNOSUPPORT / os error 97)
 # is detected and rejected by require_cfg.
@@ -1355,7 +1383,7 @@ INIT="${UNPACK}/init"
 # applets referenced as bare commands in /init (heuristic: word at a
 # command position); these are the ones the menu/services need.
 REQUIRED_APPLETS="mount mkdir ip ln sleep timeout od dd awk cat grep tr \
-setsid cttyhack telnetd dropbear readlink reboot devmem"
+setsid cttyhack telnetd dropbear readlink reboot devmem switch_root"
 MISSING=""
 for a in ${REQUIRED_APPLETS}; do
 	# dropbear is a real binary, everything else must be a busybox link
@@ -1378,12 +1406,14 @@ for a in ${REQUIRED_APPLETS}; do
 		MISSING="${MISSING} ${a}"
 	fi
 done
+check "shipped archive: /sbin/switch_root -> /bin/busybox" \
+	test "$(readlink "${UNPACK}/sbin/switch_root")" = "/bin/busybox"
 # functional: run the shipped busybox through qemu and prove the applets
 # actually execute (not just that the symlink exists)
 if [ -x "${UNPACK}/bin/busybox" ] && command -v qemu-aarch64 > /dev/null; then
 	BBBIN="${UNPACK}/bin/busybox"
 	BB_OK=1
-	for a in mount ip ln sleep od awk; do
+	for a in mount ip ln sleep od awk switch_root; do
 		env -i qemu-aarch64 "${BBBIN}" "${a}" --help > /dev/null 2>&1 \
 			|| BBBAD=1
 	done
@@ -1395,6 +1425,67 @@ if [ -x "${UNPACK}/bin/busybox" ] && command -v qemu-aarch64 > /dev/null; then
 else
 	note "qemu-aarch64 not available; skipped applet execution check"
 fi
+
+# ------------------------------------------------ switch_root logic (issue #8)
+section "switch_root logic (issue #8)"
+grep -q 'try_switch_root' "${INIT}" \
+	&& ok "init: try_switch_root present" \
+	|| bad "init: try_switch_root missing"
+grep -q 'switch_root "${newroot}" /sbin/init' "${INIT}" \
+	&& ok "init: exec switch_root present" \
+	|| bad "init: exec switch_root missing"
+grep -q 'c2s-root' "${INIT}" \
+	&& ok "init: checks for c2s-root label" \
+	|| bad "init: c2s-root label check missing"
+grep -q 'userdata' "${INIT}" \
+	&& ok "init: checks userdata partition" \
+	|| bad "init: userdata partition check missing"
+# Negative control for switch_root gate
+_neg_init=$(mktemp)
+grep -v 'switch_root' "${INIT}" > "${_neg_init}"
+if ! grep -q 'switch_root "${newroot}" /sbin/init' "${_neg_init}"; then
+	ok "switch_root negative control: missing switch_root is detected (gate is sensitive)"
+else
+	bad "switch_root negative control failed"
+fi
+rm -f "${_neg_init}"
+
+# ------------------------------------------------ rootfs builder (issue #8)
+section "rootfs builder (issue #8)"
+ROOTFS_SCRIPT="c2s-rescue/scripts/build-rootfs.sh"
+check "build-rootfs.sh exists and is executable" \
+	test -x "${ROOTFS_SCRIPT}"
+grep -q 'c2s-root' "${ROOTFS_SCRIPT}" \
+	&& ok "build-rootfs.sh: creates ext4 with label c2s-root" \
+	|| bad "build-rootfs.sh: missing c2s-root label"
+grep -q 'phosh' "${ROOTFS_SCRIPT}" \
+	&& ok "build-rootfs.sh: includes phosh package" \
+	|| bad "build-rootfs.sh: phosh package missing"
+grep -q 'phoc' "${ROOTFS_SCRIPT}" \
+	&& ok "build-rootfs.sh: includes phoc package" \
+	|| bad "build-rootfs.sh: phoc package missing"
+grep -q 'squeekboard' "${ROOTFS_SCRIPT}" \
+	&& ok "build-rootfs.sh: includes squeekboard package" \
+	|| bad "build-rootfs.sh: squeekboard package missing"
+grep -q 'greetd' "${ROOTFS_SCRIPT}" \
+	&& ok "build-rootfs.sh: includes greetd autologin" \
+	|| bad "build-rootfs.sh: greetd missing"
+grep -q 'sudoers.d/90-rescue' "${ROOTFS_SCRIPT}" \
+	&& ok "build-rootfs.sh: configures passwordless sudo for rescue" \
+	|| bad "build-rootfs.sh: rescue sudo configuration missing"
+grep -q 'c2s-flash-boot' "${ROOTFS_SCRIPT}" \
+	&& ok "build-rootfs.sh: installs c2s-flash-boot in rootfs" \
+	|| bad "build-rootfs.sh: c2s-flash-boot installation missing"
+
+# Negative control for build-rootfs gate
+_neg_rootfs=$(mktemp)
+grep -v 'phosh' "${ROOTFS_SCRIPT}" > "${_neg_rootfs}"
+if ! grep -q 'phosh' "${_neg_rootfs}"; then
+	ok "build-rootfs.sh negative control: missing phosh is detected (gate is sensitive)"
+else
+	bad "build-rootfs.sh negative control failed"
+fi
+rm -f "${_neg_rootfs}"
 
 # ------------------------------------------------ boot menu logic (init)
 section "boot menu logic (telnet never default)"
@@ -1581,49 +1672,49 @@ open(sys.argv[1], 'ab').write(struct.pack('<QQHHi', 0, 0,
 		NODEV="${MENUDIR}/no-such-device"
 		: > "${NODEV}"
 
-		# 1. press 114 -> telnet
+		# 1. press 114 -> rescue
 		: > "${MENUDIR}/ev1"; ev "${MENUDIR}/ev1" 1 114 1
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev1")" = "telnet" ] \
-			&& ok "keys: volume-down press (114, value 1) selects telnet" \
-			|| bad "keys: volume-down press did not select telnet"
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev1")" = "rescue" ] \
+			&& ok "keys: volume-down press (114, value 1) selects rescue" \
+			|| bad "keys: volume-down press did not select rescue"
 		# 2. release then press (press after release must still count)
 		: > "${MENUDIR}/ev2"; ev "${MENUDIR}/ev2" 1 114 0; ev "${MENUDIR}/ev2" 1 114 1
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev2")" = "telnet" ] \
-			&& ok "keys: release+press sequence selects telnet" \
-			|| bad "keys: release+press sequence did not select telnet"
-		# 3. release alone (value 0) -> rescue
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev2")" = "rescue" ] \
+			&& ok "keys: release+press sequence selects rescue" \
+			|| bad "keys: release+press sequence did not select rescue"
+		# 3. release alone (value 0) -> default rootfs
 		: > "${MENUDIR}/ev3"; ev "${MENUDIR}/ev3" 1 114 0
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev3")" = "rescue" ] \
-			&& ok "keys: release event does not select telnet" \
-			|| bad "keys: release event selected telnet"
-		# 4. autorepeat (value 2) on 115/116 -> rescue (never telnet)
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev3")" = "rootfs" ] \
+			&& ok "keys: release event does not select rescue (defaults to rootfs)" \
+			|| bad "keys: release event changed default selection"
+		# 4. autorepeat (value 2) on 115/116 -> default rootfs (never rescue)
 		: > "${MENUDIR}/ev4"
 		ev "${MENUDIR}/ev4" 1 115 2; ev "${MENUDIR}/ev4" 1 116 2
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev4")" = "rescue" ] \
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev4")" = "rootfs" ] \
 			&& ok "keys: autorepeat events do not select" \
 			|| bad "keys: autorepeat events changed the selection"
-		# 5. foreign key press (113 mute) + EV_SYN (type 0) -> rescue
+		# 5. foreign key press (113 mute) + EV_SYN (type 0) -> default rootfs
 		: > "${MENUDIR}/ev5"
 		ev "${MENUDIR}/ev5" 1 113 1; ev "${MENUDIR}/ev5" 0 0 0
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev5")" = "rescue" ] \
-			&& ok "keys: foreign key press and EV_SYN do not select" \
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev5")" = "rootfs" ] \
+			&& ok "keys: foreign key press and EV_SYN do not select (defaults to rootfs)" \
 			|| bad "keys: foreign event selected a mode"
-		# 6. volume-up (115) and power (116) press -> rescue
+		# 6. volume-up (115) and power (116) press -> rootfs
 		: > "${MENUDIR}/ev6"
 		ev "${MENUDIR}/ev6" 1 115 1
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev6")" = "rescue" ] \
-			&& ok "keys: volume-up selects rescue" \
-			|| bad "keys: volume-up did not select rescue"
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev6")" = "rootfs" ] \
+			&& ok "keys: volume-up selects rootfs" \
+			|| bad "keys: volume-up did not select rootfs"
 		: > "${MENUDIR}/ev6b"
 		ev "${MENUDIR}/ev6b" 1 116 1
-		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev6b")" = "rescue" ] \
-			&& ok "keys: power selects rescue" \
-			|| bad "keys: power did not select rescue"
-		# 7. timeout -> rescue, and stdout must be exactly one line
+		[ "$(run_keys -- "${NODEV}" "${MENUDIR}/ev6b")" = "rootfs" ] \
+			&& ok "keys: power selects rootfs" \
+			|| bad "keys: power did not select rootfs"
+		# 7. timeout -> rootfs, and stdout must be exactly one line
 		OUT=$(run_keys -t 1 -- "${NODEV}" "${NODEV}")
-		[ "${OUT}" = "rescue" ] \
-			&& ok "keys: timeout defaults to rescue (telnet off)" \
-			|| bad "keys: timeout did not default to rescue"
+		[ "${OUT}" = "rootfs" ] \
+			&& ok "keys: timeout defaults to rootfs" \
+			|| bad "keys: timeout did not default to rootfs"
 		[ "$(printf '%s\n' "${OUT}" | wc -l)" -eq 1 ] \
 			&& ok "keys: stdout carries exactly one line" \
 			|| bad "keys: stdout is not a single line"
@@ -1640,22 +1731,22 @@ open(sys.argv[1], 'ab').write(struct.pack('<QQHHi', 0, 0,
 		# 9. echo of the menu text during the drain window must NOT select:
 		#    the banner the helper would echo contains "telnet"; a terminal
 		#    with local echo sends exactly such lines back immediately.
-		( exec 3> "${SER}"; printf '  vol-down or type telnet : rescue + USB telnet (DEBUG)\r\n' >&3; sleep 0.2; exec 3>&- ) &
+		( exec 3> "${SER}"; printf '  vol-down or type rescue  : rescue mode (stay in initramfs)\r\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 2 -- "${SER}" "${NODEV}")
 		wait || true
-		[ "${OUT}" = "rescue" ] \
+		[ "${OUT}" = "rootfs" ] \
 			&& ok "keys: menu-echo line during drain does not select" \
-			|| bad "keys: echoed menu text selected telnet"
+			|| bad "keys: echoed menu text selected rescue"
 		# 9b. buffered input at menu start (arrives during the drain
 		#     window, before raw mode could flush it) must not select:
 		#     even an exact "telnet\r\n" is discarded there.
 		( exec 3> "${SER}"; printf 'telnet\r\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 2 -- "${SER}" "${NODEV}")
 		wait || true
-		[ "${OUT}" = "rescue" ] \
+		[ "${OUT}" = "rootfs" ] \
 			&& ok "keys: buffered line during drain window is discarded" \
-			|| bad "keys: buffered line during drain selected telnet"
-		# 10. serial line "rescue" and empty Enter -> rescue
+			|| bad "keys: buffered line during drain selected rescue"
+		# 10. serial line "rescue" and empty Enter -> rootfs
 		( exec 3> "${SER}"; sleep 0.6; printf 'rescue\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 3 -- "${SER}" "${NODEV}")
 		wait || true
@@ -1665,15 +1756,21 @@ open(sys.argv[1], 'ab').write(struct.pack('<QQHHi', 0, 0,
 		( exec 3> "${SER}"; sleep 0.6; printf '\r\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 3 -- "${SER}" "${NODEV}")
 		wait || true
-		[ "${OUT}" = "rescue" ] \
-			&& ok "keys: serial Enter selects rescue" \
+		[ "${OUT}" = "rootfs" ] \
+			&& ok "keys: serial Enter selects rootfs" \
 			|| bad "keys: serial Enter failed"
-		# 11. garbage serial line -> ignored, timeout -> rescue
+		( exec 3> "${SER}"; sleep 0.6; printf 'rootfs\n' >&3; sleep 0.2; exec 3>&- ) &
+		OUT=$(run_keys -t 3 -- "${SER}" "${NODEV}")
+		wait || true
+		[ "${OUT}" = "rootfs" ] \
+			&& ok "keys: serial 'rootfs' selects rootfs" \
+			|| bad "keys: serial 'rootfs' failed"
+		# 11. garbage serial line -> ignored, timeout -> rootfs
 		( exec 3> "${SER}"; sleep 0.6; printf 'hello world\n' >&3; sleep 0.2; exec 3>&- ) &
 		OUT=$(run_keys -t 2 -- "${SER}" "${NODEV}")
 		wait || true
-		[ "${OUT}" = "rescue" ] \
-			&& ok "keys: garbage serial line ignored (timeout -> rescue)" \
+		[ "${OUT}" = "rootfs" ] \
+			&& ok "keys: garbage serial line ignored (timeout -> rootfs)" \
 			|| bad "keys: garbage serial line changed the selection"
 
 		# 12. events arriving over time on a fifo (writer opens first,
@@ -1694,8 +1791,8 @@ PYEOF
 		FW=$!
 		OUT=$(run_keys -t 3 -- "${NODEV}" "${FIFO}")
 		wait "${FW}" || true
-		[ "${OUT}" = "telnet" ] \
-			&& ok "keys: fifo stream (delayed press/release/SYN mix) selects telnet" \
+		[ "${OUT}" = "rescue" ] \
+			&& ok "keys: fifo stream (delayed press/release/SYN mix) selects rescue" \
 			|| bad "keys: fifo stream lost the key press"
 		# 13. fifo writer closes without input: no spin, clean timeout
 		FIFO2="${MENUDIR}/evfifo2"
@@ -1703,8 +1800,8 @@ PYEOF
 		( exec 3> "${FIFO2}"; exec 3>&- ) &
 		OUT=$(run_keys -t 1 -- "${NODEV}" "${FIFO2}")
 		wait || true
-		[ "${OUT}" = "rescue" ] \
-			&& ok "keys: closed fifo writer times out to rescue" \
+		[ "${OUT}" = "rootfs" ] \
+			&& ok "keys: closed fifo writer times out to rootfs" \
 			|| bad "keys: closed fifo writer did not time out cleanly"
 
 		# ---- wrapper (rescue-menu): sysfs discovery, NOT event0 ----
@@ -1740,8 +1837,8 @@ PYEOF
 				2> "${log}"
 		}
 		OUT=$(run_menu "${MENUDIR}/wrapper.log")
-		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "telnet" ] \
-			&& ok "menu: gpio-keys at event7 (not event0) discovered and used" \
+		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "rescue" ] \
+			&& ok "menu: gpio-keys at event7 (not event0) discovered and used (selects rescue)" \
 			|| bad "menu: gpio-keys discovery failed (got '$(printf '%s' "${OUT}" | tail -n1)')"
 		# ... and event0 must NOT be picked when it lacks the key bits
 		# (only its sysfs node exists: event7's directory is removed,
@@ -1749,19 +1846,19 @@ PYEOF
 		: > "${FAKE}/dev/input/event7"
 		rm -rf "${FAKE}/sys/event7"
 		OUT=$(run_menu "${MENUDIR}/wrapper2.log")
-		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "rescue" ] \
-			&& ok "menu: non-gpio event0 (no key caps) is not used" \
+		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "rootfs" ] \
+			&& ok "menu: non-gpio event0 (no key caps) is not used (defaults to rootfs)" \
 			|| bad "menu: hostile event0 was used for input"
-		# no gpio-keys at all -> wrapper must still default to rescue
+		# no gpio-keys at all -> wrapper must still default to rootfs
 		OUT=$(env -i PATH=/usr/bin:/bin \
 			RESCUE_MENU_SYSFS="${MENUDIR}/does-not-exist" \
 			RESCUE_MENU_TIMEOUT=3 \
 			RESCUE_MENU_KEYS="${KEYS}" \
 			timeout 30 "${QEMU}" "${UNPACK}/bin/busybox" ash "${MENU}" \
 			2> "${MENUDIR}/wrapper3.log")
-		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "rescue" ] \
-			&& ok "menu: no gpio-keys found -> rescue (telnet off)" \
-			|| bad "menu: missing gpio-keys did not default to rescue"
+		[ "$(printf '%s\n' "${OUT}" | tail -n 1)" = "rootfs" ] \
+			&& ok "menu: no gpio-keys found -> rootfs (default)" \
+			|| bad "menu: missing gpio-keys did not default to rootfs"
 	fi
 fi
 # root-owned, strict permissions on the credential path

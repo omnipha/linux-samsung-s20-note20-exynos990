@@ -2066,3 +2066,20 @@ AVB: `SHA256_RSA4096`, rollback index **13**, Samsung DT table `d7b7ab1e` ok, FD
   - Driver state machine: `suspended` when idle; switches to `s6sy761 1-0048: input_open: sensing ON (ret=0)` when `/dev/input/event0` is opened; switches to `s6sy761 1-0048: input_close: sensing OFF` when closed.
   - Live capture: `/dev/input/event0` held open exclusively during armed capture windows (20s baseline and 40s live window). 0 raw bytes read, 0 events decoded, no X/Y coordinates received. IRQ count remained steady during armed windows and only transitioned upon SMBus sense toggling.
   - Hardware status: I2C bus (HSI2C @ 108d0000), power rails (tsp_io 1.8V, tsp_avdd 3.0V via S2DOS05), Y79A devid (0x79a1), axes scaling, and interrupt line connectivity to the AP GIC are confirmed operational. Physical finger contact on glass did not trigger touch packets in rescue mode.
+
+## Candidate diag20 (Package 4, Issue #8): Debian arm64 rootfs + switch_root initramfs path
+
+### Summary
+Package 4 preparation:
+1. `c2s-rescue/scripts/build-rootfs.sh`: reproducible Debian arm64 rootfs builder with Phosh, phoc, squeekboard, Mesa, NetworkManager, openssh-server, passwordless sudo for user `rescue` (uid 1000), key-only sshd, auto-login into Phosh, stable host keys, ext4 labeled `c2s-root` <= 8 GB.
+2. Kernel config additions: `CONFIG_EXT4_FS=y`, `CONFIG_EXT4_FS_POSIX_ACL=y`, `CONFIG_CGROUPS=y`, `CONFIG_CGROUP_PIDS=y`, `CONFIG_CGROUP_DEVICE=y`, `CONFIG_CGROUP_CPUACCT=y`, `CONFIG_CGROUP_SCHED=y`, `CONFIG_AUTOFS_FS=y`, `CONFIG_SECCOMP=y`.
+3. Initramfs `/init` switch_root path: detects `/dev/block/by-name/userdata` with label `c2s-root` and `/sbin/init`, brings up USB gadget (NCM/RNDIS) + SSH rescue first, then mounts rootfs and invokes `switch_root`. Boot menu defaults to rootfs after 20s timeout; volume-down selects rescue.
+
+### Verification
+* `verify.sh`: **409 passed, 0 failed**.
+* Negative control `CONFIG_EXT4_FS`: unset symbol rejected.
+* Negative control `CONFIG_CGROUPS`: unset symbol rejected.
+* Negative control `switch_root`: missing switch_root in init rejected.
+* Negative control `build-rootfs.sh`: missing builder rejected.
+
+---
